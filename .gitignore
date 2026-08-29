@@ -1,0 +1,41 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+
+# Local Codex/workspace state
+.codex/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# WoW runtime data does not belong inside an addon repository
+Cache/
+Errors/
+Logs/
+Screenshots/
+SavedVariables/
+WTF/
+
+# Build, validation, and packaging output
+build/
+coverage/
+dist/
+luac.out
+*.luac
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.zip
+
