@@ -114,16 +114,19 @@ local autoQuestDialogueHookRetries = 0
 local autoQuestDiscoveryGeneration = 0
 local autoQuestWatchFrameUpdateHookInstalled = false
 local autoQuestOpeningQuestId
+local autoQuestOpeningShouldAccept = false
+local autoQuestOpeningAutomatic = false
 local autoQuestAcceptButtonCounter = 0
-local autoQuestSpaceBindingOwner
-local autoQuestSpaceBindingButton
-local autoQuestSpaceBindingActive = false
 local autoQuestNativeSuppressionSuspended = false
+local autoQuestNativeWatchFrameHooked
+local autoQuestNativeWatchFrameSuppressed = false
+local autoQuestNativeWatchFrameWasShown = false
 local _RequestAutoQuestNoticeRefresh
 local _RestoreNativeAutoQuestDefaults
 local _EnsureAutoQuestNativeHook
 local _SuppressNativeAutoQuestDefaults
 local _ScheduleNextAutoQuestAutoAccept
+local _HandlePresentedAutoQuestDetail
 
 local function _TrimLFGMirrorText(value)
     value = tostring(value or "")
@@ -696,6 +699,20 @@ local function _HasReadyAutoQuestOffers()
     return false
 end
 
+local function _HasPendingAutoQuestOffers()
+    local profile = Questie.db and Questie.db.profile
+    if not profile or not profile.trackerEnabled or not profile.trackerAutoQuestNotices then
+        return false
+    end
+
+    for _, questId in ipairs(autoQuestOfferOrder) do
+        if autoQuestOffers[questId] then
+            return true
+        end
+    end
+    return false
+end
+
 local function _IsFrameEffectivelyVisible(frame)
     if not frame then
         return false
@@ -757,88 +774,6 @@ local function _ShouldAutoAcceptAutoQuest(questId, offer)
     return true
 end
 
-local function _ClearAutoQuestSpaceBinding()
-    if not autoQuestSpaceBindingActive then
-        autoQuestSpaceBindingButton = nil
-        return true
-    end
-    if autoQuestSpaceBindingOwner and autoQuestSpaceBindingOwner.Hide then
-        pcall(autoQuestSpaceBindingOwner.Hide, autoQuestSpaceBindingOwner)
-    end
-    -- Force the post-combat refresh to re-evaluate this binding even when the
-    -- client defers the protected ClearOverrideBindings call.
-    autoQuestSpaceBindingButton = nil
-    if not autoQuestSpaceBindingOwner or type(ClearOverrideBindings) ~= "function" then
-        autoQuestSpaceBindingActive = false
-        autoQuestSpaceBindingButton = nil
-        return true
-    end
-
-    local ok = pcall(ClearOverrideBindings, autoQuestSpaceBindingOwner)
-    if ok then
-        autoQuestSpaceBindingActive = false
-        autoQuestSpaceBindingButton = nil
-    end
-    return ok
-end
-
-local function _UpdateAutoQuestSpaceBinding()
-    local profile = Questie.db and Questie.db.profile
-    local desiredButton
-    if profile and profile.trackerAutoQuestSpaceAccept and not autoQuestOpeningQuestId
-        and _HasVisibleAutoQuestReplacement()
-    then
-        for _, line in ipairs(autoQuestRenderedLines) do
-            local accept = line.autoQuestPanel and line.autoQuestPanel.accept
-            local offer = line.autoQuestId and autoQuestOffers[line.autoQuestId]
-            if line.isAutoQuestNotice and _IsFrameEffectivelyVisible(line)
-                and _IsFrameEffectivelyVisible(accept)
-                and offer and not offer.acceptPending
-            then
-                desiredButton = accept
-                break
-            end
-        end
-    end
-
-    if not desiredButton then
-        _ClearAutoQuestSpaceBinding()
-        return
-    end
-    if autoQuestSpaceBindingActive and autoQuestSpaceBindingButton == desiredButton then
-        return
-    end
-    if not _ClearAutoQuestSpaceBinding() then
-        return
-    end
-    if type(InCombatLockdown) == "function" and InCombatLockdown() then
-        return
-    end
-    if type(SetOverrideBindingClick) ~= "function" or not desiredButton.GetName or not desiredButton:GetName() then
-        return
-    end
-
-    if not autoQuestSpaceBindingOwner then
-        autoQuestSpaceBindingOwner = _G.Questie335AutoQuestSpaceBindingOwner
-            or CreateFrame("Frame", "Questie335AutoQuestSpaceBindingOwner", UIParent)
-    end
-    if autoQuestSpaceBindingOwner.Show then
-        pcall(autoQuestSpaceBindingOwner.Show, autoQuestSpaceBindingOwner)
-    end
-    local ok = pcall(
-        SetOverrideBindingClick,
-        autoQuestSpaceBindingOwner,
-        true,
-        "SPACE",
-        desiredButton:GetName(),
-        "LeftButton"
-    )
-    if ok then
-        autoQuestSpaceBindingActive = true
-        autoQuestSpaceBindingButton = desiredButton
-    end
-end
-
 local function _RetryAutoQuestNativeSuppression(questId)
     if not autoQuestOffers[questId] then
         return
@@ -878,25 +813,32 @@ local function _ScheduleAutoQuestTitleRetry(offer)
     offer.titleRetries = (offer.titleRetries or 0) + 1
     local questId = offer.questId
     C_Timer.After(AUTO_QUEST_NOTICE_RETRY_DELAY, function()
-        if autoQuestOffers[questId] ~= offer or offer.title then
+        if autoQuestOffers[questId] ~= offer or (offer.title and not offer.titleIsFallback) then
             return
         end
 
-        offer.title = _ResolveAutoQuestTitle(questId, offer.titleHint)
-        if not offer.title and offer.titleRetries < AUTO_QUEST_NOTICE_MAX_RETRIES then
+        local resolvedTitle = _ResolveAutoQuestTitle(questId, offer.titleHint)
+        if resolvedTitle then
+            offer.title = resolvedTitle
+            offer.titleIsFallback = nil
+        end
+        if not resolvedTitle and offer.titleRetries < AUTO_QUEST_NOTICE_MAX_RETRIES then
             _ScheduleAutoQuestTitleRetry(offer)
             return
         end
 
         -- Ascension custom quests can be absent from Questie's DB and still be
         -- valid server offers. Keep the interaction functional in that case.
-        offer.title = offer.title or ("Quest " .. tostring(questId))
+        if not resolvedTitle then
+            offer.title = "Quest " .. tostring(questId)
+            offer.titleIsFallback = true
+        end
         autoQuestSuppressionScanNeeded = true
         _RequestAutoQuestNoticeRefresh()
     end)
 end
 
-local function _CaptureAutoQuestOffer(questId, popupType, titleHint)
+local function _CaptureAutoQuestOffer(questId, popupType, titleHint, nativeFrame)
     questId = tonumber(questId)
     if not questId or questId <= 0 then
         return false
@@ -922,9 +864,23 @@ local function _CaptureAutoQuestOffer(questId, popupType, titleHint)
         autoQuestOfferOrder[#autoQuestOfferOrder + 1] = questId
     end
 
-    offer.titleHint = _TrimAutoQuestText(titleHint) or offer.titleHint
-    offer.title = offer.title or _ResolveAutoQuestTitle(questId, offer.titleHint)
-    if not offer.title and not offer.titleRetryScheduled then
+    if nativeFrame then
+        offer.nativeFrame = nativeFrame
+    end
+
+    local resolvedHint = _TrimAutoQuestText(titleHint)
+    if resolvedHint then
+        offer.titleHint = resolvedHint
+        offer.title = resolvedHint
+        offer.titleIsFallback = nil
+    elseif not offer.title or offer.titleIsFallback then
+        local resolvedTitle = _ResolveAutoQuestTitle(questId, offer.titleHint)
+        if resolvedTitle then
+            offer.title = resolvedTitle
+            offer.titleIsFallback = nil
+        end
+    end
+    if (not offer.title or offer.titleIsFallback) and not offer.titleRetryScheduled then
         offer.titleRetryScheduled = true
         _ScheduleAutoQuestTitleRetry(offer)
     end
@@ -988,40 +944,140 @@ local function _GetAutoQuestFrameTitle(frame)
         return nil
     end
 
-    local function ReadTitle(container)
-        if not container then
-            return nil
+    local ignoredText = {
+        ["accept"] = true,
+        ["accept quest"] = true,
+        ["auto-provided quest"] = true,
+        ["click to accept quest"] = true,
+        ["click to view quest"] = true,
+        ["new quest available"] = true,
+        ["objectives"] = true,
+        ["quest accepted"] = true,
+        ["quest discovered"] = true,
+        ["quest discovered!"] = true,
+        ["view"] = true,
+        ["view quest"] = true,
+    }
+    local bestTitle
+    local titleParts = {}
+    local titlePartSet = {}
+
+    local function ConsiderText(value)
+        value = _TrimAutoQuestText(value)
+        if not value then
+            return
         end
-        for _, key in ipairs({"Title", "title", "QuestTitle", "questTitle", "QuestName"}) do
+        value = string.gsub(value, "|T.-|t", "")
+        value = string.gsub(value, "|c%x%x%x%x%x%x%x%x", "")
+        value = string.gsub(value, "|r", "")
+
+        local parts = {}
+        for part in string.gmatch(value, "[^\r\n]+") do
+            part = _TrimAutoQuestText(part)
+            local lower = part and string.lower(part)
+            if part and not ignoredText[lower]
+                and not string.find(lower, "^click to ")
+                and not string.find(lower, "^quest %d+$")
+            then
+                parts[#parts + 1] = part
+            end
+        end
+
+        local candidate = _TrimAutoQuestText(table.concat(parts, " "))
+        if candidate and string.find(candidate, "[^%s%p]") then
+            if not titlePartSet[candidate] then
+                titlePartSet[candidate] = true
+                titleParts[#titleParts + 1] = candidate
+            end
+            if not bestTitle or string.len(candidate) > string.len(bestTitle) then
+                bestTitle = candidate
+            end
+        end
+    end
+
+    local function GetObjects(container, methodName)
+        local method = container and container[methodName]
+        if type(method) ~= "function" then
+            return {}
+        end
+
+        local objects
+        local ok = pcall(function()
+            objects = {method(container)}
+        end)
+        return ok and objects or {}
+    end
+
+    local visited = {}
+    local function ScanContainer(container, depth)
+        if not container or visited[container] or depth > 3 then
+            return
+        end
+        visited[container] = true
+
+        for _, key in ipairs({"QuestName", "questName", "QuestTitle", "questTitle", "Title", "title", "Text", "text"}) do
             local value = container[key]
-            local valueType = type(value)
-            if valueType == "string" then
-                value = _TrimAutoQuestText(value)
-            elseif (valueType == "table" or valueType == "userdata") and type(value.GetText) == "function" then
+            if type(value) == "string" then
+                ConsiderText(value)
+            elseif value and type(value.GetText) == "function" then
                 local ok, text = pcall(value.GetText, value)
-                value = ok and _TrimAutoQuestText(text) or nil
-            else
-                value = nil
+                if ok then
+                    ConsiderText(text)
+                end
             end
-            if value then
-                return value
+        end
+
+        if type(container.GetRegions) == "function" then
+            for _, region in ipairs(GetObjects(container, "GetRegions")) do
+                if region and type(region.GetText) == "function" then
+                    local ok, text = pcall(region.GetText, region)
+                    if ok then
+                        ConsiderText(text)
+                    end
+                end
+            end
+        end
+        if type(container.GetChildren) == "function" then
+            for _, child in ipairs(GetObjects(container, "GetChildren")) do
+                ScanContainer(child, depth + 1)
             end
         end
     end
 
-    local title = ReadTitle(frame)
-    if title then
-        return title
-    end
-
-    local scrollChild = frame.ScrollChild
-    if not scrollChild and type(frame.GetName) == "function" then
+    ScanContainer(frame, 0)
+    if frame.ScrollChild then
+        ScanContainer(frame.ScrollChild, 1)
+    elseif type(frame.GetName) == "function" then
         local ok, frameName = pcall(frame.GetName, frame)
         if ok and type(frameName) == "string" then
-            scrollChild = _G[frameName .. "ScrollChild"]
+            ScanContainer(_G[frameName .. "ScrollChild"], 1)
         end
     end
-    return ReadTitle(scrollChild)
+    if #titleParts <= 1 then
+        return bestTitle
+    end
+
+    local independentParts = {}
+    for index, candidate in ipairs(titleParts) do
+        local contained = false
+        for otherIndex, other in ipairs(titleParts) do
+            if index ~= otherIndex and string.len(other) > string.len(candidate)
+                and string.find(other, candidate, 1, true)
+            then
+                contained = true
+                break
+            end
+        end
+        if not contained then
+            independentParts[#independentParts + 1] = candidate
+        end
+    end
+
+    local combinedTitle = _TrimAutoQuestText(table.concat(independentParts, " "))
+    if combinedTitle and string.len(combinedTitle) <= 255 then
+        return combinedTitle
+    end
+    return bestTitle
 end
 
 local function _IsExplicitAutoQuestOfferFrame(frame)
@@ -1093,10 +1149,77 @@ local function _ScanVisibleAutoQuestOffers(scanPendingQueue)
                 if _EnsureAutoQuestNativeHook then
                     _EnsureAutoQuestNativeHook(frame)
                 end
-                _CaptureAutoQuestOffer(questId, "OFFER", _GetAutoQuestFrameTitle(frame))
+                _CaptureAutoQuestOffer(questId, "OFFER", _GetAutoQuestFrameTitle(frame), frame)
             end
         end
     end)
+end
+
+local function _FindNativeAutoQuestFrame(questId)
+    local offer = autoQuestOffers[questId]
+    local frame = offer and offer.nativeFrame
+    if frame and _GetFrameQuestId(frame) == questId then
+        return frame
+    end
+
+    return _EnumerateFrames(function(candidate)
+        return _GetFrameQuestId(candidate) == questId
+            and _IsExplicitAutoQuestOfferFrame(candidate)
+    end)
+end
+
+local function _InvokeNativeAutoQuestFrame(frame)
+    if not frame then
+        return false
+    end
+
+    if type(frame.Click) == "function" and pcall(frame.Click, frame, "LeftButton") then
+        return true
+    end
+
+    local globalHandler = _G.WatchFrameAutoQuestPopUp_OnClick or _G.WatchFrameAutoQuestPopup_OnClick
+    if type(globalHandler) == "function" and pcall(globalHandler, frame, "LeftButton") then
+        return true
+    end
+
+    local function InvokeScript(target, scriptName)
+        if not target or type(target.GetScript) ~= "function" then
+            return false
+        end
+        local ok, script = pcall(target.GetScript, target, scriptName)
+        if ok and type(script) == "function" then
+            return pcall(script, target, "LeftButton") == true
+        end
+        return false
+    end
+
+    if InvokeScript(frame, "OnClick") or InvokeScript(frame, "OnMouseUp") then
+        return true
+    end
+
+    local scrollChild = frame.ScrollChild
+    if not scrollChild and type(frame.GetName) == "function" then
+        local ok, frameName = pcall(frame.GetName, frame)
+        if ok and type(frameName) == "string" then
+            scrollChild = _G[frameName .. "ScrollChild"]
+        end
+    end
+    return InvokeScript(scrollChild, "OnClick") or InvokeScript(scrollChild, "OnMouseUp")
+end
+
+local function _RequestAutoQuestOfferDisplay(questId, preferNativeFrame)
+    if preferNativeFrame then
+        local nativeFrame = _FindNativeAutoQuestFrame(questId)
+        if _InvokeNativeAutoQuestFrame(nativeFrame) then
+            return true
+        end
+    end
+
+    if type(ShowQuestOffer) ~= "function" then
+        return false
+    end
+    local ok, result = pcall(ShowQuestOffer, questId)
+    return ok and result ~= false
 end
 
 local function _CloseDialogueAutoQuestOffer(questId)
@@ -1113,6 +1236,21 @@ local function _CloseDialogueAutoQuestOffer(questId)
         end
     end)
     return closed
+end
+
+local function _DismissPendingAutoQuestPopup(questId)
+    if _CloseDialogueAutoQuestOffer(questId) then
+        return
+    end
+
+    if type(RemoveAutoQuestPopUp) == "function" then
+        pcall(RemoveAutoQuestPopUp, questId)
+    elseif type(WatchFrameAutoQuest_ClearPopUp) == "function" then
+        pcall(WatchFrameAutoQuest_ClearPopUp, questId)
+    end
+    if type(WatchFrame_Update) == "function" then
+        pcall(WatchFrame_Update)
+    end
 end
 
 local function _SuppressAutoQuestFrame(frame)
@@ -1193,6 +1331,66 @@ local function _RestoreAutoQuestFrame(state)
     return complete
 end
 
+local function _GetNativeWatchFrame()
+    return _G.WatchFrame or _G.QuestWatchFrame
+end
+
+local function _ShouldSuppressNativeWatchFrame()
+    local profile = Questie.db and Questie.db.profile
+    return not autoQuestNativeSuppressionSuspended
+        and profile and profile.trackerAutoQuestHideNative
+        and _HasPendingAutoQuestOffers()
+end
+
+local function _SuppressNativeWatchFrame()
+    if not _ShouldSuppressNativeWatchFrame() then
+        return false
+    end
+
+    local frame = _GetNativeWatchFrame()
+    if not frame or not frame.Hide then
+        return false
+    end
+    if not autoQuestNativeWatchFrameSuppressed then
+        autoQuestNativeWatchFrameWasShown = not frame.IsShown or frame:IsShown()
+        autoQuestNativeWatchFrameSuppressed = true
+    end
+    if not frame.IsShown or frame:IsShown() then
+        pcall(frame.Hide, frame)
+    end
+    return true
+end
+
+local function _RestoreNativeWatchFrame()
+    if not autoQuestNativeWatchFrameSuppressed then
+        return
+    end
+
+    local frame = _GetNativeWatchFrame()
+    local wasShown = autoQuestNativeWatchFrameWasShown
+    autoQuestNativeWatchFrameSuppressed = false
+    autoQuestNativeWatchFrameWasShown = false
+
+    local profile = Questie.db and Questie.db.profile
+    if frame and frame.Show and wasShown and profile and profile.trackerEnabled
+        and profile.showBlizzardQuestTimer
+    then
+        pcall(frame.Show, frame)
+    end
+end
+
+local function _InstallNativeWatchFrameSuppression()
+    local frame = _GetNativeWatchFrame()
+    if not frame or frame == autoQuestNativeWatchFrameHooked or not frame.HookScript then
+        return
+    end
+
+    autoQuestNativeWatchFrameHooked = frame
+    pcall(frame.HookScript, frame, "OnShow", function()
+        _SuppressNativeWatchFrame()
+    end)
+end
+
 _RestoreNativeAutoQuestDefaults = function()
     local remaining = {}
     for index = #autoQuestSuppressedFrames, 1, -1 do
@@ -1204,6 +1402,7 @@ _RestoreNativeAutoQuestDefaults = function()
         end
     end
     autoQuestSuppressedFrames = remaining
+    _RestoreNativeWatchFrame()
 end
 
 _EnsureAutoQuestNativeHook = function(frame)
@@ -1214,6 +1413,12 @@ _EnsureAutoQuestNativeHook = function(frame)
     frame.__Questie335AutoQuestHooked = true
     local isOfferFrame = _IsExplicitAutoQuestOfferFrame(frame)
     local function RefreshAfterNativeChange(self)
+        if isOfferFrame then
+            local questId = _GetFrameQuestId(self)
+            if questId then
+                _CaptureAutoQuestOffer(questId, "OFFER", _GetAutoQuestFrameTitle(self), self)
+            end
+        end
         if isOfferFrame
             and not autoQuestNativeSuppressionSuspended
             and Questie.db.profile.trackerAutoQuestHideNative
@@ -1249,10 +1454,13 @@ _SuppressNativeAutoQuestDefaults = function()
         _RestoreNativeAutoQuestDefaults()
         return
     end
-    if not Questie.db.profile.trackerAutoQuestHideNative or not _HasReadyAutoQuestOffers() then
+    if not Questie.db.profile.trackerAutoQuestHideNative or not _HasPendingAutoQuestOffers() then
         _RestoreNativeAutoQuestDefaults()
         return
     end
+
+    _InstallNativeWatchFrameSuppression()
+    _SuppressNativeWatchFrame()
     if InCombatLockdown() then
         autoQuestSuppressionScanNeeded = true
         return
@@ -1373,6 +1581,7 @@ end
 
 local function _InitializeAutoQuestNoticeHooks()
     autoQuestNativeSuppressionSuspended = false
+    _InstallNativeWatchFrameSuppression()
     if type(AddAutoQuestPopUp) == "function" and not autoQuestGlobalHookInstalled then
         local ok = pcall(hooksecurefunc, "AddAutoQuestPopUp", function(questId, popupType)
             _CaptureAutoQuestOffer(questId, popupType, nil)
@@ -1390,10 +1599,11 @@ local function _InitializeAutoQuestNoticeHooks()
     if type(WatchFrame_Update) == "function" and not autoQuestWatchFrameUpdateHookInstalled then
         local ok = pcall(hooksecurefunc, "WatchFrame_Update", function()
             autoQuestSuppressionScanNeeded = true
-            if _HasVisibleAutoQuestReplacement() then
+            _ScanVisibleAutoQuestOffers()
+            if _HasPendingAutoQuestOffers() then
                 _SuppressNativeAutoQuestDefaults()
             else
-                _ScanVisibleAutoQuestOffers()
+                _RestoreNativeAutoQuestDefaults()
             end
         end)
         autoQuestWatchFrameUpdateHookInstalled = ok == true
@@ -1407,22 +1617,20 @@ local function _InitializeAutoQuestNoticeHooks()
         autoQuestEventFrame:RegisterEvent("QUEST_ACCEPTED")
         autoQuestEventFrame:RegisterEvent("QUEST_LOG_UPDATE")
         autoQuestEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-        autoQuestEventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
         autoQuestEventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
         autoQuestEventFrame:SetScript("OnEvent", function(_, event, ...)
             if event == "QUEST_DETAIL" then
-                _OnAutoQuestDetail(...)
+                if not (_HandlePresentedAutoQuestDetail and _HandlePresentedAutoQuestDetail(...)) then
+                    _OnAutoQuestDetail(...)
+                end
             elseif event == "QUEST_ACCEPTED" or event == "QUEST_LOG_UPDATE" then
                 C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
             elseif event == "PLAYER_ENTERING_WORLD" then
                 _ScheduleAutoQuestOfferDiscovery()
-            elseif event == "PLAYER_REGEN_DISABLED" then
-                _ClearAutoQuestSpaceBinding()
             elseif event == "PLAYER_REGEN_ENABLED" then
                 _SweepAcceptedAutoQuestOffers()
                 autoQuestSuppressionScanNeeded = true
                 _RequestAutoQuestNoticeRefresh()
-                _UpdateAutoQuestSpaceBinding()
             end
         end)
     end
@@ -1578,7 +1786,7 @@ local function _EnsureAutoQuestNoticeWidgets(line)
     local accept = _CreateAutoQuestNoticeAction(
         panel,
         "Questie335AutoQuestAcceptButton" .. autoQuestAcceptButtonCounter,
-        "ACCEPT  [SPACE]"
+        "ACCEPT"
     )
     accept:SetScript("OnClick", function(self)
         QuestieTracker:AcceptAutoQuestOffer(self.questId, false)
@@ -1587,11 +1795,7 @@ local function _EnsureAutoQuestNoticeWidgets(line)
         self.hovered = true
         GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
         GameTooltip:AddLine("Accept auto-provided quest", 1, 0.82, 0)
-        if Questie.db.profile.trackerAutoQuestSpaceAccept then
-            GameTooltip:AddLine("Accept immediately. Space activates this button while the notice is available.", 1, 1, 1, true)
-        else
-            GameTooltip:AddLine("Accept this quest immediately.", 1, 1, 1, true)
-        end
+        GameTooltip:AddLine("Accept this quest immediately.", 1, 1, 1, true)
         GameTooltip:AddLine("Questie's Auto Accept Quests setting also applies to these offers.", 0.35, 0.9, 0.75, true)
         GameTooltip:Show()
     end)
@@ -1749,6 +1953,133 @@ local function _GetDisplayedAutoQuestId()
     end
 end
 
+local function _ClearAutoQuestOpeningState(questId)
+    if not questId or autoQuestOpeningQuestId == questId then
+        autoQuestOpeningQuestId = nil
+        autoQuestOpeningShouldAccept = false
+        autoQuestOpeningAutomatic = false
+    end
+end
+
+local function _FinishAutoQuestPresentationFailure(questId, offer, message)
+    local isAutomatic = autoQuestOpeningAutomatic
+    if _IsPlayerOnAutoQuest(questId) then
+        _RemoveAutoQuestOffer(questId)
+    elseif offer and autoQuestOffers[questId] == offer then
+        offer.acceptPending = nil
+    end
+    _ClearAutoQuestOpeningState(questId)
+    _RequestAutoQuestNoticeRefresh()
+    if message and not isAutomatic then
+        Questie:Print(message)
+    end
+    _ScheduleNextAutoQuestAutoAccept()
+end
+
+local function _BeginAutoQuestPresentation(questId, shouldAccept, isAutomatic)
+    local offer = autoQuestOffers[questId]
+    if not offer or autoQuestOpeningQuestId then
+        return false
+    end
+
+    offer.presentationSerial = (offer.presentationSerial or 0) + 1
+    local serial = offer.presentationSerial
+    offer.acceptPending = shouldAccept and true or nil
+    autoQuestOpeningQuestId = questId
+    autoQuestOpeningShouldAccept = shouldAccept and true or false
+    autoQuestOpeningAutomatic = isAutomatic and true or false
+    _RequestAutoQuestNoticeRefresh()
+
+    -- The native WatchFrame button is Ascension's authoritative opener. Direct
+    -- ShowQuestOffer retries cover offers captured before that button exists.
+    _RequestAutoQuestOfferDisplay(questId, true)
+    for _, retry in ipairs({{0.15, false}, {0.50, true}, {1.00, false}}) do
+        C_Timer.After(retry[1], function()
+            if autoQuestOpeningQuestId == questId and offer.presentationSerial == serial
+            then
+                _RequestAutoQuestOfferDisplay(questId, retry[2])
+            end
+        end)
+    end
+    C_Timer.After(2, function()
+        if autoQuestOpeningQuestId == questId and offer.presentationSerial == serial
+        then
+            local action = shouldAccept and "accept" or "open"
+            _FinishAutoQuestPresentationFailure(
+                questId,
+                offer,
+                "|cffff5555The server did not " .. action .. " auto-provided quest " .. tostring(questId) .. ".|r"
+            )
+        end
+    end)
+    return true
+end
+
+_HandlePresentedAutoQuestDetail = function()
+    local questId = autoQuestOpeningQuestId
+    if not questId then
+        return false
+    end
+
+    local displayedQuestId = _GetDisplayedAutoQuestId()
+    if displayedQuestId and displayedQuestId > 0 and displayedQuestId ~= questId then
+        return false
+    end
+
+    local offer = autoQuestOffers[questId]
+    local title = type(GetTitleText) == "function" and _TrimAutoQuestText(GetTitleText())
+    if offer and title then
+        offer.title = title
+        offer.titleHint = title
+        offer.titleIsFallback = nil
+    end
+
+    if not autoQuestOpeningShouldAccept then
+        _DismissPendingAutoQuestPopup(questId)
+        _RemoveAutoQuestOffer(questId)
+        _ClearAutoQuestOpeningState(questId)
+        _RequestAutoQuestNoticeRefresh()
+        _ScheduleNextAutoQuestAutoAccept()
+        return true
+    end
+
+    if type(AcceptQuest) ~= "function" then
+        _FinishAutoQuestPresentationFailure(
+            questId,
+            offer,
+            "|cffff5555Unable to accept auto-provided quest " .. tostring(questId) .. ": AcceptQuest is unavailable.|r"
+        )
+        return true
+    end
+
+    local accepted = pcall(AcceptQuest)
+    if not accepted then
+        _FinishAutoQuestPresentationFailure(
+            questId,
+            offer,
+            "|cffff5555The server rejected the accept action for quest " .. tostring(questId) .. ".|r"
+        )
+        return true
+    end
+
+    _ClearAutoQuestOpeningState(questId)
+    C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
+    C_Timer.After(0.25, _SweepAcceptedAutoQuestOffers)
+    C_Timer.After(1, function()
+        if offer and autoQuestOffers[questId] == offer then
+            if _IsPlayerOnAutoQuest(questId) then
+                _DismissPendingAutoQuestPopup(questId)
+                _RemoveAutoQuestOffer(questId)
+            else
+                offer.acceptPending = nil
+            end
+            _RequestAutoQuestNoticeRefresh()
+        end
+        _ScheduleNextAutoQuestAutoAccept()
+    end)
+    return true
+end
+
 _ScheduleNextAutoQuestAutoAccept = function()
     if autoQuestOpeningQuestId then
         return
@@ -1781,43 +2112,7 @@ function QuestieTracker:OpenAutoQuestOffer(questId)
     if not questId or not autoQuestOffers[questId] or autoQuestOpeningQuestId then
         return false
     end
-    if type(ShowQuestOffer) ~= "function" then
-        Questie:Print("|cffff5555Unable to open auto-provided quest " .. tostring(questId) .. ": ShowQuestOffer is unavailable.|r")
-        return false
-    end
-
-    _ClearAutoQuestSpaceBinding()
-    autoQuestOpeningQuestId = questId
-    local ok = pcall(ShowQuestOffer, questId)
-    if not ok then
-        autoQuestOpeningQuestId = nil
-        Questie:Print("|cffff5555Unable to open auto-provided quest " .. tostring(questId) .. ".|r")
-        return false
-    end
-    C_Timer.After(1, function()
-        if autoQuestOpeningQuestId == questId then
-            autoQuestOpeningQuestId = nil
-            _RequestAutoQuestNoticeRefresh()
-            _ScheduleNextAutoQuestAutoAccept()
-        end
-    end)
-
-    -- Match Ascension's native popup contract: remove the pending popup only
-    -- after its offer has been opened. AcceptQuest is intentionally not called.
-    local dialogueClosed = _CloseDialogueAutoQuestOffer(questId)
-    if not dialogueClosed then
-        if type(WatchFrameAutoQuest_ClearPopUp) == "function" then
-            pcall(WatchFrameAutoQuest_ClearPopUp, questId)
-        elseif type(RemoveAutoQuestPopUp) == "function" then
-            pcall(RemoveAutoQuestPopUp, questId)
-            if type(WatchFrame_Update) == "function" then
-                pcall(WatchFrame_Update, WatchFrame)
-            end
-        end
-    end
-    _RemoveAutoQuestOffer(questId)
-    _RequestAutoQuestNoticeRefresh()
-    return true
+    return _BeginAutoQuestPresentation(questId, false, false)
 end
 
 function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
@@ -1834,105 +2129,19 @@ function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
     if isAutomatic and not _ShouldAutoAcceptAutoQuest(questId, offer) then
         return false
     end
-    if type(ShowQuestOffer) ~= "function" or type(AcceptQuest) ~= "function" then
+    if type(AcceptQuest) ~= "function" then
         if not isAutomatic then
-            Questie:Print("|cffff5555Unable to accept auto-provided quest " .. tostring(questId) .. ": quest APIs are unavailable.|r")
+            Questie:Print("|cffff5555Unable to accept auto-provided quest " .. tostring(questId) .. ": AcceptQuest is unavailable.|r")
         end
         return false
     end
-
-    _ClearAutoQuestSpaceBinding()
-    offer.acceptPending = true
-    autoQuestOpeningQuestId = questId
-    _RequestAutoQuestNoticeRefresh()
-
-    local shown = pcall(ShowQuestOffer, questId)
-    if not shown then
-        offer.acceptPending = nil
-        autoQuestOpeningQuestId = nil
-        _RequestAutoQuestNoticeRefresh()
-        if not isAutomatic then
-            Questie:Print("|cffff5555Unable to open auto-provided quest " .. tostring(questId) .. ".|r")
-        end
-        _ScheduleNextAutoQuestAutoAccept()
-        return false
-    end
-
-    local attempts = 0
-    local function FinishFailedAttempt(message)
-        if autoQuestOffers[questId] == offer then
-            offer.acceptPending = nil
-            _RequestAutoQuestNoticeRefresh()
-        end
-        if autoQuestOpeningQuestId == questId then
-            autoQuestOpeningQuestId = nil
-        end
-        if message and not isAutomatic then
-            Questie:Print(message)
-        end
-        _ScheduleNextAutoQuestAutoAccept()
-    end
-
-    local function TryAcceptDisplayedQuest()
-        if autoQuestOffers[questId] ~= offer then
-            if autoQuestOpeningQuestId == questId then
-                autoQuestOpeningQuestId = nil
-            end
-            _RequestAutoQuestNoticeRefresh()
-            _ScheduleNextAutoQuestAutoAccept()
-            return
-        end
-        if _IsPlayerOnAutoQuest(questId) then
-            _RemoveAutoQuestOffer(questId)
-            autoQuestOpeningQuestId = nil
-            _RequestAutoQuestNoticeRefresh()
-            return
-        end
-
-        if _GetDisplayedAutoQuestId() ~= questId then
-            attempts = attempts + 1
-            if attempts <= 4 then
-                C_Timer.After(attempts * 0.05, TryAcceptDisplayedQuest)
-            else
-                FinishFailedAttempt("|cffff5555The server did not present auto-provided quest " .. tostring(questId) .. " for acceptance.|r")
-            end
-            return
-        end
-
-        local accepted = pcall(AcceptQuest)
-        if not accepted then
-            FinishFailedAttempt("|cffff5555The server rejected the accept action for quest " .. tostring(questId) .. ".|r")
-            return
-        end
-
-        C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
-        C_Timer.After(0.25, _SweepAcceptedAutoQuestOffers)
-        C_Timer.After(1, function()
-            if autoQuestOffers[questId] == offer then
-                if _IsPlayerOnAutoQuest(questId) then
-                    _RemoveAutoQuestOffer(questId)
-                else
-                    offer.acceptPending = nil
-                end
-                _RequestAutoQuestNoticeRefresh()
-            end
-            if autoQuestOpeningQuestId == questId then
-                autoQuestOpeningQuestId = nil
-            end
-            _RequestAutoQuestNoticeRefresh()
-            _ScheduleNextAutoQuestAutoAccept()
-        end)
-    end
-
-    TryAcceptDisplayedQuest()
-    return true
+    return _BeginAutoQuestPresentation(questId, true, isAutomatic)
 end
 
 function QuestieTracker:SetAutoQuestNoticesEnabled(enabled)
     Questie.db.profile.trackerAutoQuestNotices = enabled and true or false
     if not enabled then
         autoQuestNativeSuppressionSuspended = true
-        _ClearAutoQuestSpaceBinding()
         _RestoreNativeAutoQuestDefaults()
     else
         autoQuestNativeSuppressionSuspended = false
@@ -1953,21 +2162,12 @@ function QuestieTracker:SetAutoQuestHideNative(enabled)
     _RequestAutoQuestNoticeRefresh()
 end
 
-function QuestieTracker:SetAutoQuestSpaceAccept(enabled)
-    Questie.db.profile.trackerAutoQuestSpaceAccept = enabled and true or false
-    if not enabled then
-        _ClearAutoQuestSpaceBinding()
-    end
-    _RequestAutoQuestNoticeRefresh()
-end
-
 function QuestieTracker:RefreshAutoQuestAutoAccept()
     _ScheduleNextAutoQuestAutoAccept()
 end
 
 function QuestieTracker:RestoreAutoQuestNativeDefaults()
     autoQuestNativeSuppressionSuspended = true
-    _ClearAutoQuestSpaceBinding()
     _RestoreNativeAutoQuestDefaults()
 end
 
@@ -2498,7 +2698,6 @@ function QuestieTracker:Disable()
     Questie.db.profile.trackerEnabled = false
     autoQuestNativeSuppressionSuspended = true
     _RestoreNativeLFGTracker()
-    _ClearAutoQuestSpaceBinding()
     _RestoreNativeAutoQuestDefaults()
     lfgMirrorSnapshot = nil
     QuestieTracker:ResetDurabilityFrame()
@@ -2523,7 +2722,6 @@ function QuestieTracker:Toggle()
         Questie.db.profile.trackerEnabled = false
         autoQuestNativeSuppressionSuspended = true
         _RestoreNativeLFGTracker()
-        _ClearAutoQuestSpaceBinding()
         _RestoreNativeAutoQuestDefaults()
         lfgMirrorSnapshot = nil
     else
@@ -2871,9 +3069,7 @@ function QuestieTracker:Update(forceUpdate)
                     line.autoQuestPanel.accept:Disable()
                     line.autoQuestPanel.accept:SetAlpha(0.62)
                 else
-                    local acceptLabel = Questie.db.profile.trackerAutoQuestSpaceAccept
-                        and type(SetOverrideBindingClick) == "function" and "ACCEPT  [SPACE]" or "ACCEPT"
-                    line.autoQuestPanel.accept.label:SetText(acceptLabel)
+                    line.autoQuestPanel.accept.label:SetText("ACCEPT")
                     line.autoQuestPanel.accept:Enable()
                     line.autoQuestPanel.accept:SetAlpha(1)
                 end
@@ -3991,7 +4187,7 @@ function QuestieTracker:UpdateFormatting()
         trackerBaseFrame:Show()
     end
 
-    if _HasVisibleAutoQuestReplacement() then
+    if _HasPendingAutoQuestOffers() then
         _SuppressNativeAutoQuestDefaults()
     else
         _RestoreNativeAutoQuestDefaults()
@@ -4040,7 +4236,6 @@ function QuestieTracker:UpdateFormatting()
 
     TrackerUtils:UpdateVoiceOverPlayButtons()
     TrackerUtils:ShowVoiceOverPlayButtons()
-    _UpdateAutoQuestSpaceBinding()
     _StartAutoQuestNoticeAnimations()
 end
 

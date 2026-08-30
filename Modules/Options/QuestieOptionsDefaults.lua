@@ -85,7 +85,6 @@ function QuestieOptionsDefaults:Load()
             trackerAutoQuestNotices = true,
             trackerAutoQuestHideNative = true,
             trackerAutoQuestNoticeAnimation = true,
-            trackerAutoQuestSpaceAccept = true,
             trackerMirrorLFGObjectives = true,
             trackerLFGObjectivePosition = 0,
             trackerCollapseDirection = "normal",

@@ -477,17 +477,10 @@ local function _CreateTrackerWorkspace(parent)
     }))
     _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
         name = "Hide Native Quest Notices",
-        description = "Hides matching native and DialogueUI offer popups only after Questie has rendered its replacement.",
+        description = "Keeps the native WatchFrame hidden while Questie owns an auto-provided offer, then restores timed-quest behavior.",
         disabled = function() return _TrackerSettingDisabled() or not _Profile().trackerAutoQuestNotices end,
         get = function() return _Profile().trackerAutoQuestHideNative end,
         set = function(value) QuestieTracker:SetAutoQuestHideNative(value) end,
-    }))
-    _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
-        name = "Space Accepts Auto-Provided Quests",
-        description = "Temporarily binds Space to ACCEPT while an actionable notice is visible, then restores the previous Space behavior.",
-        disabled = function() return _TrackerSettingDisabled() or not _Profile().trackerAutoQuestNotices end,
-        get = function() return _Profile().trackerAutoQuestSpaceAccept end,
-        set = function(value) QuestieTracker:SetAutoQuestSpaceAccept(value) end,
     }))
     _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
         name = "Animate Quest Notices",

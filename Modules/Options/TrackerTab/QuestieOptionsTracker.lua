@@ -579,7 +579,7 @@ function QuestieOptions.tabs.tracker:Initialize()
                                 order = 2,
                                 width = 1.5,
                                 name = function() return l10n('Hide Native Quest Notices') end,
-                                desc = function() return l10n("Hides the matching Ascension/Blizzard popup only after Questie has rendered a valid replacement. The native popup is restored if this feature or the tracker is disabled.") end,
+                                desc = function() return l10n("Keeps the native WatchFrame hidden while an auto-provided offer is pending in Questie. The frame is restored afterward when Blizzard quest timers require it.") end,
                                 disabled = function()
                                     return not Questie.db.profile.trackerEnabled
                                         or not Questie.db.profile.trackerAutoQuestNotices
@@ -603,21 +603,6 @@ function QuestieOptions.tabs.tracker:Initialize()
                                 set = function(_, value)
                                     Questie.db.profile.trackerAutoQuestNoticeAnimation = value and true or false
                                     QuestieTracker:Update(true)
-                                end,
-                            },
-                            spaceAcceptAutoQuestNotices = {
-                                type = "toggle",
-                                order = 4,
-                                width = 1.5,
-                                name = function() return l10n('Space Accepts Auto-Provided Quests') end,
-                                desc = function() return l10n('Temporarily binds Space to ACCEPT only while an actionable Questie notice is visible. The previous Space behavior is restored automatically when the notice closes.') end,
-                                disabled = function()
-                                    return not Questie.db.profile.trackerEnabled
-                                        or not Questie.db.profile.trackerAutoQuestNotices
-                                end,
-                                get = function() return Questie.db.profile.trackerAutoQuestSpaceAccept end,
-                                set = function(_, value)
-                                    QuestieTracker:SetAutoQuestSpaceAccept(value)
                                 end,
                             },
                         },
