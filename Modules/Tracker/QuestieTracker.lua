@@ -46,6 +46,8 @@ local QuestieDebugOffer = QuestieLoader:ImportModule("QuestieDebugOffer")
 
 --- COMPATIBILITY ---
 local C_Timer = QuestieCompat.C_Timer
+local NativeC_QuestLog = _G.C_QuestLog
+local C_QuestLog = QuestieCompat.C_QuestLog or NativeC_QuestLog
 local GetQuestLogTitle = QuestieCompat.GetQuestLogTitle
 local GetQuestLogIndexByID = QuestieCompat.GetQuestLogIndexByID
 local GetItemInfo = QuestieCompat.GetItemInfo
@@ -89,6 +91,27 @@ local lfgMirrorRefreshScheduled = false
 local lfgNativeFrame
 local lfgRenderedLines = {}
 local _RequestLFGObjectiveMirrorRefresh
+
+local AUTO_QUEST_NOTICE_RETRY_DELAY = 0.25
+local AUTO_QUEST_NOTICE_MAX_RETRIES = 4
+local AUTO_QUEST_NOTICE_ANIMATION_TIME = 0.24
+local autoQuestOffers = {}
+local autoQuestOfferOrder = {}
+local autoQuestRenderedLines = {}
+local autoQuestRefreshScheduled = false
+local autoQuestSuppressionScanNeeded = false
+local autoQuestSuppressedFrames = {}
+local autoQuestSuppressedFrameSet = {}
+local autoQuestEventFrame
+local autoQuestGlobalHookInstalled = false
+local autoQuestRemoveHookInstalled = false
+local autoQuestDialogueHookInstalled = false
+local autoQuestDialogueHookRetries = 0
+local autoQuestOpeningQuestId
+local _RequestAutoQuestNoticeRefresh
+local _RestoreNativeAutoQuestDefaults
+local _EnsureAutoQuestNativeHook
+local _SuppressNativeAutoQuestDefaults
 
 local function _TrimLFGMirrorText(value)
     value = tostring(value or "")
@@ -558,6 +581,974 @@ function QuestieTracker:SetLFGObjectiveCombatFallback(inCombat)
     end
 end
 
+local function _TrimAutoQuestText(value)
+    if type(value) == "table" then
+        value = value.title or value.name or value.questName
+    end
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    value = string.gsub(value, "^%s+", "")
+    value = string.gsub(value, "%s+$", "")
+    if value == "" then
+        return nil
+    end
+    return value
+end
+
+local function _CallQuestTitleProvider(provider, methodName, questId)
+    local method = type(provider) == "table" and provider[methodName]
+    if type(method) ~= "function" then
+        return nil
+    end
+
+    local ok, value = pcall(method, questId)
+    if not ok then
+        return nil
+    end
+    return _TrimAutoQuestText(value)
+end
+
+local function _ResolveAutoQuestTitle(questId, titleHint)
+    local title = _TrimAutoQuestText(titleHint)
+    if title then
+        return title
+    end
+
+    if QuestieCompat.GetQuestNameById then
+        local ok, value = pcall(QuestieCompat.GetQuestNameById, questId)
+        if ok then
+            title = _TrimAutoQuestText(value)
+            if title then
+                return title
+            end
+        end
+    end
+
+    title = _CallQuestTitleProvider(_G.C_TaskQuest, "GetQuestInfoByQuestID", questId)
+    if title then
+        return title
+    end
+
+    title = _CallQuestTitleProvider(NativeC_QuestLog, "GetTitleForQuestID", questId)
+        or _CallQuestTitleProvider(NativeC_QuestLog, "GetQuestInfo", questId)
+        or _CallQuestTitleProvider(C_QuestLog, "GetTitleForQuestID", questId)
+        or _CallQuestTitleProvider(C_QuestLog, "GetQuestInfo", questId)
+    if title then
+        return title
+    end
+
+    if NativeC_QuestLog and type(NativeC_QuestLog.RequestLoadQuestByID) == "function" then
+        pcall(NativeC_QuestLog.RequestLoadQuestByID, questId)
+    elseif C_QuestLog and type(C_QuestLog.RequestLoadQuestByID) == "function" then
+        pcall(C_QuestLog.RequestLoadQuestByID, questId)
+    end
+
+    local questLogIndex = GetQuestLogIndexByID and GetQuestLogIndexByID(questId)
+    if questLogIndex then
+        return _TrimAutoQuestText(GetQuestLogTitle(questLogIndex))
+    end
+end
+
+local function _IsPlayerOnAutoQuest(questId)
+    if not questId then
+        return false
+    end
+
+    local questLogIndex = GetQuestLogIndexByID and GetQuestLogIndexByID(questId)
+    if questLogIndex and questLogIndex > 0 then
+        return true
+    end
+
+    if C_QuestLog and type(C_QuestLog.IsOnQuest) == "function" then
+        local ok, isOnQuest = pcall(C_QuestLog.IsOnQuest, questId)
+        if ok and isOnQuest then
+            return true
+        end
+    end
+    return false
+end
+
+local function _HasReadyAutoQuestOffers()
+    if not Questie.db or not Questie.db.profile or not Questie.db.profile.trackerAutoQuestNotices then
+        return false
+    end
+
+    for _, questId in ipairs(autoQuestOfferOrder) do
+        local offer = autoQuestOffers[questId]
+        if offer and offer.title then
+            return true
+        end
+    end
+    return false
+end
+
+local function _HasVisibleAutoQuestReplacement()
+    if not trackerBaseFrame or not trackerBaseFrame.IsShown or not trackerBaseFrame:IsShown() then
+        return false
+    end
+
+    for _, noticeLine in ipairs(autoQuestRenderedLines) do
+        if noticeLine.isAutoQuestNotice and noticeLine:IsShown()
+            and noticeLine.autoQuestPanel and noticeLine.autoQuestPanel:IsShown()
+        then
+            return true
+        end
+    end
+    return false
+end
+
+local function _RetryAutoQuestNativeSuppression(questId)
+    if not autoQuestOffers[questId] then
+        return
+    end
+
+    autoQuestSuppressionScanNeeded = true
+    if _SuppressNativeAutoQuestDefaults and _HasVisibleAutoQuestReplacement() then
+        _SuppressNativeAutoQuestDefaults()
+    else
+        _RequestAutoQuestNoticeRefresh()
+    end
+end
+
+local function _RemoveAutoQuestOffer(questId)
+    questId = tonumber(questId)
+    if not questId or not autoQuestOffers[questId] then
+        return false
+    end
+
+    autoQuestOffers[questId] = nil
+    for index = #autoQuestOfferOrder, 1, -1 do
+        if autoQuestOfferOrder[index] == questId then
+            table.remove(autoQuestOfferOrder, index)
+            break
+        end
+    end
+    autoQuestSuppressionScanNeeded = true
+    return true
+end
+
+local function _ScheduleAutoQuestTitleRetry(offer)
+    offer.titleRetries = (offer.titleRetries or 0) + 1
+    local questId = offer.questId
+    C_Timer.After(AUTO_QUEST_NOTICE_RETRY_DELAY, function()
+        if autoQuestOffers[questId] ~= offer or offer.title then
+            return
+        end
+
+        offer.title = _ResolveAutoQuestTitle(questId, offer.titleHint)
+        if not offer.title and offer.titleRetries < AUTO_QUEST_NOTICE_MAX_RETRIES then
+            _ScheduleAutoQuestTitleRetry(offer)
+            return
+        end
+
+        -- Ascension custom quests can be absent from Questie's DB and still be
+        -- valid server offers. Keep the interaction functional in that case.
+        offer.title = offer.title or ("Quest " .. tostring(questId))
+        autoQuestSuppressionScanNeeded = true
+        _RequestAutoQuestNoticeRefresh()
+    end)
+end
+
+local function _CaptureAutoQuestOffer(questId, popupType, titleHint)
+    questId = tonumber(questId)
+    if not questId or questId <= 0 then
+        return false
+    end
+    if autoQuestOpeningQuestId == questId then
+        return false
+    end
+
+    popupType = string.upper(tostring(popupType or "OFFER"))
+    if popupType ~= "OFFER" or _IsPlayerOnAutoQuest(questId) then
+        return false
+    end
+
+    local offer = autoQuestOffers[questId]
+    local isNewOffer = not offer
+    if not offer then
+        offer = {
+            questId = questId,
+            shouldAnimate = true,
+        }
+        autoQuestOffers[questId] = offer
+        autoQuestOfferOrder[#autoQuestOfferOrder + 1] = questId
+    end
+
+    offer.titleHint = _TrimAutoQuestText(titleHint) or offer.titleHint
+    offer.title = offer.title or _ResolveAutoQuestTitle(questId, offer.titleHint)
+    if not offer.title and not offer.titleRetryScheduled then
+        offer.titleRetryScheduled = true
+        _ScheduleAutoQuestTitleRetry(offer)
+    end
+
+    autoQuestSuppressionScanNeeded = true
+    _RequestAutoQuestNoticeRefresh()
+
+    if isNewOffer then
+        -- Native and DialogueUI popup frames are created immediately after the
+        -- API call. Two bounded retries catch those frames without polling forever.
+        C_Timer.After(0.10, function()
+            _RetryAutoQuestNativeSuppression(questId)
+        end)
+        C_Timer.After(0.40, function()
+            _RetryAutoQuestNativeSuppression(questId)
+        end)
+    end
+    return true
+end
+
+local function _GetWatchFrameAutoQuestPopupData(frame)
+    if not frame or type(frame.GetName) ~= "function" then
+        return nil, nil, nil
+    end
+
+    local ok, frameName = pcall(frame.GetName, frame)
+    local popupIndex = ok and type(frameName) == "string"
+        and tonumber(string.match(frameName, "^WatchFrameAutoQuestPopUp(%d+)$")) or nil
+    if not popupIndex then
+        return nil, nil, nil
+    end
+
+    if type(GetAutoQuestPopUp) == "function" then
+        local dataOk, questId, popupType = pcall(GetAutoQuestPopUp, popupIndex)
+        if dataOk then
+            return tonumber(questId), popupType, popupIndex
+        end
+    end
+    return nil, nil, popupIndex
+end
+
+local function _GetFrameQuestId(frame)
+    if not frame then
+        return nil
+    end
+
+    local questId = tonumber(frame.questID or frame.questId or frame.QuestID)
+    if questId then
+        return questId
+    end
+    return _GetWatchFrameAutoQuestPopupData(frame)
+end
+
+local function _GetAutoQuestFrameTitle(frame)
+    if not frame then
+        return nil
+    end
+
+    local function ReadTitle(container)
+        if not container then
+            return nil
+        end
+        for _, key in ipairs({"Title", "title", "QuestTitle", "questTitle", "QuestName"}) do
+            local value = container[key]
+            local valueType = type(value)
+            if valueType == "string" then
+                value = _TrimAutoQuestText(value)
+            elseif (valueType == "table" or valueType == "userdata") and type(value.GetText) == "function" then
+                local ok, text = pcall(value.GetText, value)
+                value = ok and _TrimAutoQuestText(text) or nil
+            else
+                value = nil
+            end
+            if value then
+                return value
+            end
+        end
+    end
+
+    local title = ReadTitle(frame)
+    if title then
+        return title
+    end
+
+    local scrollChild = frame.ScrollChild
+    if not scrollChild and type(frame.GetName) == "function" then
+        local ok, frameName = pcall(frame.GetName, frame)
+        if ok and type(frameName) == "string" then
+            scrollChild = _G[frameName .. "ScrollChild"]
+        end
+    end
+    return ReadTitle(scrollChild)
+end
+
+local function _IsExplicitAutoQuestOfferFrame(frame)
+    if not frame then
+        return false
+    end
+
+    local layout = string.lower(tostring(frame.layout or ""))
+    local popupType = string.upper(tostring(frame.popupType or frame.questPopupType or frame.type or ""))
+    local _, watchPopupType, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(frame)
+    return layout == "offer"
+        or popupType == "OFFER"
+        or frame.isAutoQuestPopup == true
+        or frame.isAutoQuest == true
+        or (watchPopupIndex and (watchPopupType == nil or string.upper(tostring(watchPopupType)) == "OFFER"))
+end
+
+local function _EnumerateFrames(callback)
+    if type(EnumerateFrames) ~= "function" then
+        return
+    end
+
+    local frame = EnumerateFrames()
+    local count = 0
+    while frame and count < 10000 do
+        count = count + 1
+        if callback(frame) == true then
+            return frame
+        end
+        frame = EnumerateFrames(frame)
+    end
+end
+
+local function _ScanVisibleAutoQuestOffers()
+    _EnumerateFrames(function(frame)
+        if frame.IsShown and frame:IsShown() and _IsExplicitAutoQuestOfferFrame(frame) then
+            local questId = _GetFrameQuestId(frame)
+            if questId then
+                if _EnsureAutoQuestNativeHook then
+                    _EnsureAutoQuestNativeHook(frame)
+                end
+                _CaptureAutoQuestOffer(questId, "OFFER", _GetAutoQuestFrameTitle(frame))
+            end
+        end
+    end)
+end
+
+local function _CloseDialogueAutoQuestOffer(questId)
+    local closed = false
+    _EnumerateFrames(function(frame)
+        if _GetFrameQuestId(frame) == questId
+            and frame.layout == "offer"
+            and frame.isActive ~= false
+            and type(frame.SetQuestOffer) == "function"
+            and type(frame.Close) == "function"
+        then
+            closed = pcall(frame.Close, frame) == true
+            return closed
+        end
+    end)
+    return closed
+end
+
+local function _SuppressAutoQuestFrame(frame)
+    if not frame or frame == trackerBaseFrame or not frame.SetAlpha then
+        return false
+    end
+    if InCombatLockdown() then
+        return false
+    end
+
+    local state = autoQuestSuppressedFrameSet[frame]
+    if not state then
+        state = {
+            frame = frame,
+            alpha = frame.GetAlpha and frame:GetAlpha() or 1,
+            mouse = {},
+            mouseOrder = {},
+        }
+        if _IsExplicitAutoQuestOfferFrame(frame) and frame.isActive ~= false and state.alpha <= 0 then
+            state.alpha = 1
+        end
+        autoQuestSuppressedFrameSet[frame] = state
+        autoQuestSuppressedFrames[#autoQuestSuppressedFrames + 1] = state
+    end
+
+    if not pcall(frame.SetAlpha, frame, 0) then
+        return false
+    end
+    local frames = {}
+    _CollectLFGFrames(frame, frames, {}, 0)
+    for _, target in ipairs(frames) do
+        if target.EnableMouse and target.IsMouseEnabled then
+            if state.mouse[target] == nil then
+                local ok, enabled = pcall(target.IsMouseEnabled, target)
+                if ok then
+                    state.mouse[target] = enabled and 1 or 0
+                    state.mouseOrder[#state.mouseOrder + 1] = target
+                end
+            end
+            if state.mouse[target] ~= nil then
+                pcall(target.EnableMouse, target, false)
+            end
+        end
+    end
+    return true
+end
+
+local function _RestoreAutoQuestFrame(state)
+    local frame = state and state.frame
+    if not frame then
+        return true
+    end
+
+    local complete = true
+    if frame.SetAlpha and not pcall(frame.SetAlpha, frame, tonumber(state.alpha) or 1) then
+        complete = false
+    end
+    for _, target in ipairs(state.mouseOrder or {}) do
+        if target and target.EnableMouse and state.mouse[target] ~= nil then
+            if not pcall(target.EnableMouse, target, state.mouse[target] == 1) then
+                complete = false
+            end
+        end
+    end
+    return complete
+end
+
+_RestoreNativeAutoQuestDefaults = function()
+    local remaining = {}
+    for index = #autoQuestSuppressedFrames, 1, -1 do
+        local state = autoQuestSuppressedFrames[index]
+        if _RestoreAutoQuestFrame(state) then
+            autoQuestSuppressedFrameSet[state.frame] = nil
+        else
+            table.insert(remaining, 1, state)
+        end
+    end
+    autoQuestSuppressedFrames = remaining
+end
+
+_EnsureAutoQuestNativeHook = function(frame)
+    if not frame or frame.__Questie335AutoQuestHooked or not frame.HookScript then
+        return
+    end
+
+    frame.__Questie335AutoQuestHooked = true
+    local isOfferFrame = _IsExplicitAutoQuestOfferFrame(frame)
+    local function RefreshAfterNativeChange()
+        if _HasReadyAutoQuestOffers() then
+            autoQuestSuppressionScanNeeded = true
+            _RequestAutoQuestNoticeRefresh()
+        end
+    end
+    pcall(frame.HookScript, frame, "OnShow", RefreshAfterNativeChange)
+    pcall(frame.HookScript, frame, "OnEvent", RefreshAfterNativeChange)
+    if isOfferFrame then
+        pcall(frame.HookScript, frame, "OnUpdate", function(self)
+            if autoQuestSuppressedFrameSet[self] and self.SetAlpha then
+                self:SetAlpha(0)
+            end
+        end)
+        pcall(frame.HookScript, frame, "OnHide", function(self)
+            local questId = self.isActive == false and _GetFrameQuestId(self)
+            if questId and _RemoveAutoQuestOffer(questId) then
+                _RequestAutoQuestNoticeRefresh()
+            end
+        end)
+    end
+end
+
+_SuppressNativeAutoQuestDefaults = function()
+    if not Questie.db.profile.trackerAutoQuestHideNative or not _HasReadyAutoQuestOffers() then
+        _RestoreNativeAutoQuestDefaults()
+        return
+    end
+    if InCombatLockdown() then
+        autoQuestSuppressionScanNeeded = true
+        return
+    end
+
+    for _, frame in ipairs({_G.ObjectiveTrackerFrame, _G.QuestObjectiveTracker, _G.WatchFrame}) do
+        if frame and frame.GetChildren and frame.IsShown and frame:IsShown() then
+            _EnsureAutoQuestNativeHook(frame)
+        end
+    end
+
+    if not autoQuestSuppressionScanNeeded then
+        return
+    end
+    autoQuestSuppressionScanNeeded = false
+
+    _EnumerateFrames(function(frame)
+        local questId = _GetFrameQuestId(frame)
+        if questId and autoQuestOffers[questId] and _IsExplicitAutoQuestOfferFrame(frame)
+            and (not frame.IsShown or frame:IsShown())
+        then
+            _EnsureAutoQuestNativeHook(frame)
+            _SuppressAutoQuestFrame(frame)
+        end
+    end)
+end
+
+local function _FindDialogueUIWidgetManager()
+    return _EnumerateFrames(function(frame)
+        return type(frame.AddAutoQuestPopUp) == "function"
+            and type(frame.AcquireQuestPopup) == "function"
+    end)
+end
+
+local function _InstallDialogueUIAutoQuestHook()
+    if autoQuestDialogueHookInstalled then
+        return true
+    end
+
+    local manager = _FindDialogueUIWidgetManager()
+    if not manager then
+        return false
+    end
+
+    local ok = pcall(hooksecurefunc, manager, "AddAutoQuestPopUp", function()
+        local questId = type(GetQuestID) == "function" and GetQuestID()
+        local title = type(GetTitleText) == "function" and GetTitleText()
+        _CaptureAutoQuestOffer(questId, "OFFER", title)
+        _ScanVisibleAutoQuestOffers()
+    end)
+    autoQuestDialogueHookInstalled = ok == true
+    return autoQuestDialogueHookInstalled
+end
+
+local function _RetryDialogueUIAutoQuestHook()
+    if _InstallDialogueUIAutoQuestHook() then
+        return
+    end
+    autoQuestDialogueHookRetries = autoQuestDialogueHookRetries + 1
+    if autoQuestDialogueHookRetries < 4 then
+        C_Timer.After(autoQuestDialogueHookRetries, _RetryDialogueUIAutoQuestHook)
+    end
+end
+
+local function _SweepAcceptedAutoQuestOffers()
+    local changed = false
+    for index = #autoQuestOfferOrder, 1, -1 do
+        local questId = autoQuestOfferOrder[index]
+        if _IsPlayerOnAutoQuest(questId) then
+            changed = _RemoveAutoQuestOffer(questId) or changed
+        end
+    end
+
+    if changed then
+        _RequestAutoQuestNoticeRefresh()
+    elseif not _HasReadyAutoQuestOffers() then
+        _RestoreNativeAutoQuestDefaults()
+    end
+end
+
+local function _OnAutoQuestDetail(questStartItemId)
+    local questId = type(GetQuestID) == "function" and GetQuestID()
+    if not questId or questId == 0 then
+        return
+    end
+
+    local fromItem = questStartItemId and tonumber(questStartItemId) and tonumber(questStartItemId) ~= 0
+    local fromArea = false
+    local autoAccept = false
+    if type(QuestIsFromAreaTrigger) == "function" then
+        local ok, value = pcall(QuestIsFromAreaTrigger)
+        fromArea = ok and value == true
+    end
+    if type(QuestGetAutoAccept) == "function" then
+        local ok, value = pcall(QuestGetAutoAccept)
+        autoAccept = ok and value == true
+    end
+
+    if fromItem or (fromArea and (autoAccept or InCombatLockdown())) then
+        local title = type(GetTitleText) == "function" and GetTitleText()
+        _CaptureAutoQuestOffer(questId, "OFFER", title)
+    end
+end
+
+local function _InitializeAutoQuestNoticeHooks()
+    if type(AddAutoQuestPopUp) == "function" and not autoQuestGlobalHookInstalled then
+        local ok = pcall(hooksecurefunc, "AddAutoQuestPopUp", function(questId, popupType)
+            _CaptureAutoQuestOffer(questId, popupType, nil)
+        end)
+        autoQuestGlobalHookInstalled = ok == true
+    end
+    if type(RemoveAutoQuestPopUp) == "function" and not autoQuestRemoveHookInstalled then
+        local ok = pcall(hooksecurefunc, "RemoveAutoQuestPopUp", function(questId)
+            if _RemoveAutoQuestOffer(questId) then
+                _RequestAutoQuestNoticeRefresh()
+            end
+        end)
+        autoQuestRemoveHookInstalled = ok == true
+    end
+
+    _RetryDialogueUIAutoQuestHook()
+
+    if not autoQuestEventFrame then
+        autoQuestEventFrame = CreateFrame("Frame")
+        autoQuestEventFrame:RegisterEvent("QUEST_DETAIL")
+        autoQuestEventFrame:RegisterEvent("QUEST_ACCEPTED")
+        autoQuestEventFrame:RegisterEvent("QUEST_LOG_UPDATE")
+        autoQuestEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+        autoQuestEventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        autoQuestEventFrame:SetScript("OnEvent", function(_, event, ...)
+            if event == "QUEST_DETAIL" then
+                _OnAutoQuestDetail(...)
+            elseif event == "QUEST_ACCEPTED" or event == "QUEST_LOG_UPDATE" then
+                C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
+            elseif event == "PLAYER_ENTERING_WORLD" then
+                C_Timer.After(0.5, function()
+                    _InstallDialogueUIAutoQuestHook()
+                    _ScanVisibleAutoQuestOffers()
+                end)
+            elseif event == "PLAYER_REGEN_ENABLED" then
+                _SweepAcceptedAutoQuestOffers()
+                autoQuestSuppressionScanNeeded = true
+                _RequestAutoQuestNoticeRefresh()
+            end
+        end)
+    end
+
+    -- Questie initializes after PLAYER_ENTERING_WORLD on this client, so also
+    -- capture offers that were created before our hooks became available.
+    C_Timer.After(0, function()
+        _InstallDialogueUIAutoQuestHook()
+        _ScanVisibleAutoQuestOffers()
+    end)
+end
+
+local function _SetTextureColor(texture, color, fallback)
+    color = type(color) == "table" and color or fallback
+    texture:SetVertexColor(
+        tonumber(color[1]) or fallback[1],
+        tonumber(color[2]) or fallback[2],
+        tonumber(color[3]) or fallback[3],
+        tonumber(color[4]) or fallback[4]
+    )
+end
+
+local function _CreateNoticeEdge(parent)
+    local edge = parent:CreateTexture(nil, "BORDER")
+    edge:SetTexture("Interface\\Buttons\\WHITE8X8")
+    return edge
+end
+
+local function _EnsureAutoQuestNoticeWidgets(line)
+    if line.autoQuestPanel then
+        return
+    end
+
+    local panel = CreateFrame("Frame", nil, line)
+    panel:SetFrameLevel((line:GetFrameLevel() or 0) + 1)
+    panel:EnableMouse(false)
+    panel.background = panel:CreateTexture(nil, "BACKGROUND")
+    panel.background:SetTexture("Interface\\Buttons\\WHITE8X8")
+    panel.background:SetAllPoints(panel)
+    panel.accent = panel:CreateTexture(nil, "ARTWORK")
+    panel.accent:SetTexture("Interface\\Buttons\\WHITE8X8")
+    panel.accent:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -1)
+    panel.accent:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, 1)
+    panel.accent:SetWidth(3)
+
+    panel.edges = {
+        top = _CreateNoticeEdge(panel),
+        bottom = _CreateNoticeEdge(panel),
+        left = _CreateNoticeEdge(panel),
+        right = _CreateNoticeEdge(panel),
+    }
+    panel.edges.top:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+    panel.edges.top:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+    panel.edges.top:SetHeight(1)
+    panel.edges.bottom:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, 0)
+    panel.edges.bottom:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, 0)
+    panel.edges.bottom:SetHeight(1)
+    panel.edges.left:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+    panel.edges.left:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, 0)
+    panel.edges.left:SetWidth(1)
+    panel.edges.right:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+    panel.edges.right:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, 0)
+    panel.edges.right:SetWidth(1)
+
+    panel.badge = CreateFrame("Frame", nil, panel)
+    panel.badge:SetSize(22, 22)
+    panel.badge.background = panel.badge:CreateTexture(nil, "BACKGROUND")
+    panel.badge.background:SetTexture("Interface\\Buttons\\WHITE8X8")
+    panel.badge.background:SetAllPoints(panel.badge)
+    panel.badgeText = panel.badge:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    panel.badgeText:SetPoint("CENTER", panel.badge, "CENTER", 0, 0)
+    panel.badgeText:SetText("!")
+
+    panel.kicker = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    panel.kicker:SetJustifyH("LEFT")
+    panel.kicker:SetJustifyV("TOP")
+    if panel.kicker.SetWordWrap then
+        panel.kicker:SetWordWrap(true)
+    end
+    if panel.kicker.SetNonSpaceWrap then
+        panel.kicker:SetNonSpaceWrap(false)
+    end
+    panel.kicker:SetText("AUTO-PROVIDED QUEST")
+    panel.title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    panel.title:SetJustifyH("LEFT")
+    panel.title:SetJustifyV("TOP")
+    if panel.title.SetWordWrap then
+        panel.title:SetWordWrap(true)
+    end
+    if panel.title.SetNonSpaceWrap then
+        panel.title:SetNonSpaceWrap(false)
+    end
+
+    local action = CreateFrame("Button", nil, panel)
+    action:RegisterForClicks("LeftButtonUp")
+    action:SetFrameLevel(panel:GetFrameLevel() + 2)
+    action.background = action:CreateTexture(nil, "BACKGROUND")
+    action.background:SetTexture("Interface\\Buttons\\WHITE8X8")
+    action.background:SetAllPoints(action)
+    action.glow = action:CreateTexture(nil, "BACKGROUND")
+    action.glow:SetTexture("Interface\\Buttons\\WHITE8X8")
+    action.glow:SetPoint("TOPLEFT", action, "TOPLEFT", -2, 2)
+    action.glow:SetPoint("BOTTOMRIGHT", action, "BOTTOMRIGHT", 2, -2)
+    action.edges = {
+        top = _CreateNoticeEdge(action),
+        bottom = _CreateNoticeEdge(action),
+        left = _CreateNoticeEdge(action),
+        right = _CreateNoticeEdge(action),
+    }
+    action.edges.top:SetPoint("TOPLEFT", action, "TOPLEFT", 0, 0)
+    action.edges.top:SetPoint("TOPRIGHT", action, "TOPRIGHT", 0, 0)
+    action.edges.top:SetHeight(1)
+    action.edges.bottom:SetPoint("BOTTOMLEFT", action, "BOTTOMLEFT", 0, 0)
+    action.edges.bottom:SetPoint("BOTTOMRIGHT", action, "BOTTOMRIGHT", 0, 0)
+    action.edges.bottom:SetHeight(1)
+    action.edges.left:SetPoint("TOPLEFT", action, "TOPLEFT", 0, 0)
+    action.edges.left:SetPoint("BOTTOMLEFT", action, "BOTTOMLEFT", 0, 0)
+    action.edges.left:SetWidth(1)
+    action.edges.right:SetPoint("TOPRIGHT", action, "TOPRIGHT", 0, 0)
+    action.edges.right:SetPoint("BOTTOMRIGHT", action, "BOTTOMRIGHT", 0, 0)
+    action.edges.right:SetWidth(1)
+    action.label = action:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    action.label:SetPoint("CENTER", action, "CENTER", 0, 0)
+    action.label:SetText("VIEW QUEST")
+    action:SetScript("OnClick", function(self)
+        QuestieTracker:OpenAutoQuestOffer(self.questId)
+    end)
+    action:SetScript("OnEnter", function(self)
+        self.hovered = true
+        GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+        GameTooltip:AddLine("Auto-provided quest", 1, 0.82, 0)
+        GameTooltip:AddLine("Open the server quest offer so you can review and accept it.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    action:SetScript("OnLeave", function(self)
+        self.hovered = nil
+        GameTooltip:Hide()
+    end)
+    action:SetScript("OnUpdate", function(self, elapsed)
+        if not self.pulseEnabled then
+            self.glow:SetAlpha(0)
+            return
+        end
+        self.pulseTime = (self.pulseTime or 0) + elapsed
+        local alpha = 0.10 + ((math.sin(self.pulseTime * 4.5) + 1) * 0.12)
+        self.glow:SetAlpha(self.hovered and 0.42 or alpha)
+    end)
+    panel.action = action
+
+    line.autoQuestPanel = panel
+    line.UpdateAutoQuestNoticeLayout = function(self)
+        local noticePanel = self.autoQuestPanel
+        if not noticePanel or not self.isAutoQuestNotice then
+            return
+        end
+
+        local baseWidth = math.max(trackerMinLineWidth + trackerMarginRight, tonumber(trackerBaseFrame and trackerBaseFrame:GetWidth()) or 290)
+        local panelWidth = math.max(252, baseWidth - 4)
+        local actionWidth = panelWidth < 310 and 72 or 86
+        local textLeft = 38
+        local textRight = actionWidth + 20
+        local textWidth = math.max(108, panelWidth - textLeft - textRight)
+        local questFontSize = TrackerFonts:GetQuestFontSize()
+        local kickerFontSize = math.max(9, questFontSize - 2)
+
+        noticePanel:ClearAllPoints()
+        noticePanel:SetPoint("TOPLEFT", self, "TOPLEFT", -8, 0)
+        noticePanel:SetWidth(panelWidth)
+        noticePanel.badge:ClearAllPoints()
+        noticePanel.badge:SetPoint("LEFT", noticePanel, "LEFT", 8, 0)
+        noticePanel.kicker:ClearAllPoints()
+        noticePanel.kicker:SetPoint("TOPLEFT", noticePanel, "TOPLEFT", textLeft, -7)
+        noticePanel.kicker:SetWidth(textWidth)
+        noticePanel.kicker:SetFont(TrackerFonts:GetQuestFont(), kickerFontSize, Questie.db.profile.trackerFontOutline)
+        local kickerHeight = tonumber(noticePanel.kicker:GetStringHeight()) or kickerFontSize
+        noticePanel.title:ClearAllPoints()
+        noticePanel.title:SetPoint("TOPLEFT", noticePanel.kicker, "BOTTOMLEFT", 0, -2)
+        noticePanel.title:SetWidth(textWidth)
+        noticePanel.title:SetFont(TrackerFonts:GetQuestFont(), questFontSize, Questie.db.profile.trackerFontOutline)
+        noticePanel.title:SetText(self.autoQuestTitle or ("Quest " .. tostring(self.autoQuestId or "?")))
+        local titleHeight = tonumber(noticePanel.title:GetStringHeight()) or questFontSize
+        local targetHeight = math.max(52, titleHeight + kickerHeight + 19)
+
+        noticePanel.action:ClearAllPoints()
+        noticePanel.action:SetPoint("RIGHT", noticePanel, "RIGHT", -8, 0)
+        noticePanel.action:SetSize(actionWidth, 23)
+        noticePanel:SetHeight(targetHeight)
+        self:SetWidth(math.max(1, baseWidth - 20))
+        self.label:SetHeight(1)
+        self.contentBottomPadding = targetHeight - 1
+        self.autoQuestTargetHeight = targetHeight
+        self:SetHeight(targetHeight)
+    end
+end
+
+local function _ApplyAutoQuestNoticeColors(line)
+    local panel = line.autoQuestPanel
+    local backdrop = Questie.db.profile.trackerBackdropColor or {0, 0, 0}
+    local accent = Questie.db.profile.trackerHeaderAccentColor or {0.16, 0.78, 0.72, 0.9}
+    local gold = Questie.db.profile.trackerHeaderTextColor or {1, 0.82, 0}
+
+    panel.background:SetVertexColor(
+        math.max(0.01, (tonumber(backdrop[1]) or 0) * 0.55),
+        math.max(0.015, (tonumber(backdrop[2]) or 0) * 0.55),
+        math.max(0.02, (tonumber(backdrop[3]) or 0) * 0.55),
+        0.96
+    )
+    _SetTextureColor(panel.accent, gold, {1, 0.82, 0, 1})
+    for _, edge in pairs(panel.edges) do
+        _SetTextureColor(edge, accent, {0.16, 0.78, 0.72, 0.9})
+    end
+    panel.badge.background:SetVertexColor(0.10, 0.075, 0.01, 0.98)
+    panel.badgeText:SetTextColor(tonumber(gold[1]) or 1, tonumber(gold[2]) or 0.82, tonumber(gold[3]) or 0)
+    panel.kicker:SetTextColor(tonumber(accent[1]) or 0.16, tonumber(accent[2]) or 0.78, tonumber(accent[3]) or 0.72)
+    panel.title:SetTextColor(1, 0.94, 0.70)
+    panel.action.background:SetVertexColor(0.055, 0.065, 0.078, 0.98)
+    _SetTextureColor(panel.action.glow, gold, {1, 0.82, 0, 1})
+    for _, edge in pairs(panel.action.edges) do
+        _SetTextureColor(edge, gold, {1, 0.82, 0, 1})
+    end
+    panel.action.label:SetTextColor(tonumber(gold[1]) or 1, tonumber(gold[2]) or 0.82, tonumber(gold[3]) or 0)
+end
+
+local function _StartAutoQuestNoticeAnimations()
+    for _, line in ipairs(autoQuestRenderedLines) do
+        if line.autoQuestNeedsIntro and line.autoQuestPanel and line.autoQuestTargetHeight then
+            line.autoQuestNeedsIntro = nil
+            local panel = line.autoQuestPanel
+            local targetHeight = line.autoQuestTargetHeight
+            line:SetHeight(1)
+            panel:SetHeight(1)
+            panel:SetAlpha(0)
+            panel.introElapsed = 0
+            panel:SetScript("OnUpdate", function(self, elapsed)
+                if not line.isAutoQuestNotice or line.autoQuestPanel ~= self then
+                    self:SetScript("OnUpdate", nil)
+                    return
+                end
+
+                self.introElapsed = self.introElapsed + elapsed
+                local progress = math.min(1, self.introElapsed / AUTO_QUEST_NOTICE_ANIMATION_TIME)
+                local eased = 1 - ((1 - progress) * (1 - progress) * (1 - progress))
+                local height = math.max(1, targetHeight * eased)
+                line:SetHeight(height)
+                self:SetHeight(height)
+                self:SetAlpha(math.min(1, progress * 1.8))
+                if progress >= 1 then
+                    line:SetHeight(targetHeight)
+                    self:SetHeight(targetHeight)
+                    self:SetAlpha(1)
+                    self:SetScript("OnUpdate", nil)
+                end
+            end)
+        end
+    end
+end
+
+local function _GetAutoQuestRenderedHeight()
+    local height = 0
+    for _, noticeLine in ipairs(autoQuestRenderedLines) do
+        if noticeLine.isAutoQuestNotice and noticeLine:IsShown() then
+            height = height + (tonumber(noticeLine.autoQuestTargetHeight) or tonumber(noticeLine:GetHeight()) or 52)
+        end
+    end
+    return height
+end
+
+local function _GetAutoQuestMinimumRenderedHeight()
+    for _, noticeLine in ipairs(autoQuestRenderedLines) do
+        if noticeLine.isAutoQuestNotice and noticeLine:IsShown() then
+            return tonumber(noticeLine.autoQuestTargetHeight) or tonumber(noticeLine:GetHeight()) or 52
+        end
+    end
+    return 0
+end
+
+function QuestieTracker:OpenAutoQuestOffer(questId)
+    questId = tonumber(questId)
+    if not questId or not autoQuestOffers[questId] then
+        return false
+    end
+    if type(ShowQuestOffer) ~= "function" then
+        Questie:Print("|cffff5555Unable to open auto-provided quest " .. tostring(questId) .. ": ShowQuestOffer is unavailable.|r")
+        return false
+    end
+
+    autoQuestOpeningQuestId = questId
+    local ok = pcall(ShowQuestOffer, questId)
+    if not ok then
+        autoQuestOpeningQuestId = nil
+        Questie:Print("|cffff5555Unable to open auto-provided quest " .. tostring(questId) .. ".|r")
+        return false
+    end
+    C_Timer.After(1, function()
+        if autoQuestOpeningQuestId == questId then
+            autoQuestOpeningQuestId = nil
+        end
+    end)
+
+    -- Match Ascension's native popup contract: remove the pending popup only
+    -- after its offer has been opened. AcceptQuest is intentionally not called.
+    local dialogueClosed = _CloseDialogueAutoQuestOffer(questId)
+    if not dialogueClosed then
+        if type(WatchFrameAutoQuest_ClearPopUp) == "function" then
+            pcall(WatchFrameAutoQuest_ClearPopUp, questId)
+        elseif type(RemoveAutoQuestPopUp) == "function" then
+            pcall(RemoveAutoQuestPopUp, questId)
+            if type(WatchFrame_Update) == "function" then
+                pcall(WatchFrame_Update, WatchFrame)
+            end
+        end
+    end
+    _RemoveAutoQuestOffer(questId)
+    _RequestAutoQuestNoticeRefresh()
+    return true
+end
+
+function QuestieTracker:SetAutoQuestNoticesEnabled(enabled)
+    Questie.db.profile.trackerAutoQuestNotices = enabled and true or false
+    if not enabled then
+        _RestoreNativeAutoQuestDefaults()
+    else
+        _ScanVisibleAutoQuestOffers()
+    end
+    _RequestAutoQuestNoticeRefresh()
+end
+
+function QuestieTracker:SetAutoQuestHideNative(enabled)
+    Questie.db.profile.trackerAutoQuestHideNative = enabled and true or false
+    if not enabled then
+        _RestoreNativeAutoQuestDefaults()
+    else
+        autoQuestSuppressionScanNeeded = true
+    end
+    _RequestAutoQuestNoticeRefresh()
+end
+
+function QuestieTracker:RestoreAutoQuestNativeDefaults()
+    _RestoreNativeAutoQuestDefaults()
+end
+
+_RequestAutoQuestNoticeRefresh = function()
+    if autoQuestRefreshScheduled then
+        return
+    end
+    autoQuestRefreshScheduled = true
+    C_Timer.After(0, function()
+        autoQuestRefreshScheduled = false
+        if not QuestieTracker.started then
+            return
+        end
+        QuestieCombatQueue:Queue(function()
+            if QuestieTracker.started then
+                QuestieTracker:Update(true)
+            end
+        end)
+    end)
+end
+
 local function _NormalizeZoneName(zoneName)
     zoneName = tostring(zoneName or "")
     zoneName = string.gsub(zoneName, "^%s*(.-)%s*$", "%1")
@@ -677,6 +1668,7 @@ function QuestieTracker.Initialize()
 
     -- Initialize hooks
     QuestieTracker:HookBaseTracker()
+    _InitializeAutoQuestNoticeHooks()
 
     -- Insures all other data we're getting from other addons and WoW is loaded. There are edge
     -- cases where Questie loads too fast before everything else is available.
@@ -998,6 +1990,10 @@ function QuestieTracker:QuestItemLooted(text)
 end
 
 function QuestieTracker:HasQuest()
+    if _HasReadyAutoQuestOffers() then
+        return true
+    end
+
     if lfgMirrorSnapshot then
         return true
     end
@@ -1040,6 +2036,10 @@ function QuestieTracker:HasQuest()
     return hasQuest
 end
 
+function QuestieTracker:HasAutoQuestNotice()
+    return _HasReadyAutoQuestOffers()
+end
+
 function QuestieTracker:Enable()
     -- Update the questsWatched var before we re-enable
     if questsWatched == 0 then
@@ -1057,6 +2057,7 @@ end
 function QuestieTracker:Disable()
     Questie.db.profile.trackerEnabled = false
     _RestoreNativeLFGTracker()
+    _RestoreNativeAutoQuestDefaults()
     lfgMirrorSnapshot = nil
     QuestieTracker:ResetDurabilityFrame()
     QuestieTracker:ResetVoiceOverFrame()
@@ -1079,6 +2080,7 @@ function QuestieTracker:Toggle()
         Questie:Debug(Questie.DEBUG_DEVELOP, "[QuestieTracker:Toggle] - Tracker Disabled.")
         Questie.db.profile.trackerEnabled = false
         _RestoreNativeLFGTracker()
+        _RestoreNativeAutoQuestDefaults()
         lfgMirrorSnapshot = nil
     else
         Questie:Debug(Questie.DEBUG_DEVELOP, "[QuestieTracker:Toggle] - Tracker Enabled.")
@@ -1115,6 +2117,7 @@ function QuestieTracker:Update(forceUpdate)
     -- Tracker has started but not enabled, hide the frames
     if (not Questie.db.profile.trackerEnabled or QuestieTracker.disableHooks == true) then
         _RestoreNativeLFGTracker()
+        _RestoreNativeAutoQuestDefaults()
         lfgMirrorSnapshot = nil
         if trackerBaseFrame and trackerBaseFrame:IsShown() then
             QuestieCombatQueue:Queue(function()
@@ -1146,6 +2149,7 @@ function QuestieTracker:Update(forceUpdate)
     TrackerLinePool.ResetLinesForChange()
     TrackerLinePool.ResetButtonsForChange()
     lfgRenderedLines = {}
+    autoQuestRenderedLines = {}
 
     -- This is needed so the Tracker can also decrease its width
     trackerLineWidth = 0
@@ -1365,6 +2369,60 @@ function QuestieTracker:Update(forceUpdate)
         ))
     end
 
+    local function _UpdateAutoQuestNotices()
+        if not Questie.db.profile.trackerAutoQuestNotices then
+            return
+        end
+
+        for _, questId in ipairs(autoQuestOfferOrder) do
+            local offer = autoQuestOffers[questId]
+            if offer and offer.title then
+                line = TrackerLinePool.GetNextLine()
+                if not line then
+                    return
+                end
+
+                _EnsureAutoQuestNoticeWidgets(line)
+                line:SetMode("autoQuest")
+                line:SetOnClick("none")
+                line:SetScript("OnClick", function(self, button)
+                    if button == "LeftButton" then
+                        QuestieTracker:OpenAutoQuestOffer(self.autoQuestId)
+                    end
+                end)
+                line.expandZone:Hide()
+                line.expandQuest:Hide()
+                line.criteriaMark:Hide()
+                line.playButton:Hide()
+                line.separator:Hide()
+                line.label:SetFont(TrackerFonts:GetQuestFont(), trackerFontSizeQuest, Questie.db.profile.trackerFontOutline)
+                line.label:SetText("AUTO-PROVIDED QUEST  VIEW QUEST")
+                line.label:SetHeight(1)
+                line.label:Hide()
+                line.prefixLabel:Hide()
+                line.Quest = nil
+                line.Objective = nil
+                line.isAutoQuestNotice = true
+                line.autoQuestId = questId
+                line.autoQuestTitle = offer.title
+                line.autoQuestPanel.action.questId = questId
+                line.autoQuestPanel.action.pulseEnabled = Questie.db.profile.trackerAutoQuestNoticeAnimation ~= false
+                line.autoQuestPanel.action.pulseTime = 0
+                line.autoQuestPanel:SetScript("OnUpdate", nil)
+                line.autoQuestPanel:SetAlpha(1)
+                line.autoQuestPanel:Show()
+                _ApplyAutoQuestNoticeColors(line)
+                line:UpdateAutoQuestNoticeLayout()
+                line.autoQuestNeedsIntro = offer.shouldAnimate
+                    and Questie.db.profile.trackerAutoQuestNoticeAnimation ~= false
+                offer.shouldAnimate = nil
+                line:Show()
+                autoQuestRenderedLines[#autoQuestRenderedLines + 1] = line
+                trackerLineWidth = math.max(trackerLineWidth, trackerMinLineWidth)
+            end
+        end
+    end
+
     local function _UpdateLFGObjectives()
         if lfgRendered or not lfgSnapshot then
             return
@@ -1479,6 +2537,8 @@ function QuestieTracker:Update(forceUpdate)
         end
         lfgZoneBlocksRendered = lfgZoneBlocksRendered + 1
     end
+
+    _UpdateAutoQuestNotices()
 
     local sortedQuestIds, questDetails = TrackerUtils:GetSortedQuestIds()
 
@@ -2373,7 +3433,6 @@ function QuestieTracker:Update(forceUpdate)
     else
         _RestoreNativeLFGTracker(lfgNativeFrame)
     end
-
     -- Safety check in case we hit the linePool limit
     if not line then
         line = TrackerLinePool.GetCurrentLine()
@@ -2460,6 +3519,12 @@ function QuestieTracker:UpdateFormatting()
         trackerBaseFrame:Show()
     end
 
+    if _HasVisibleAutoQuestReplacement() then
+        _SuppressNativeAutoQuestDefaults()
+    else
+        _RestoreNativeAutoQuestDefaults()
+    end
+
     TrackerHeaderFrame:Update()
 
     if TrackerLinePool.GetHighestIndex() > 0 and trackerLineWidth > 1 then
@@ -2480,14 +3545,30 @@ function QuestieTracker:UpdateFormatting()
     local trackerFontSizeZone = TrackerFonts:GetZoneFontSize()
     local trackerTopSpacing = math.max(0, tonumber(Questie.db.profile.trackerTopSpacing) or 0)
     local trackerBottomSpacing = math.max(0, tonumber(Questie.db.profile.trackerBottomSpacing) or 0)
+    local firstLine = TrackerLinePool.GetFirstLine()
+    local autoQuestMinimumHeight = _GetAutoQuestMinimumRenderedHeight()
+    local autoQuestMinWidth = firstLine and firstLine.isAutoQuestNotice
+        and (trackerMinLineWidth + trackerMarginRight) or 0
     if Questie.db.profile.trackerHeaderEnabled or (Questie.db.profile.alwaysShowTracker and not QuestieTracker:HasQuest()) then
-            QuestieCompat.SetResizeBounds(trackerBaseFrame, TrackerHeaderFrame:GetMinWidth(), trackerHeaderFrame:GetHeight() + trackerFontSizeZone + TRACKER_CONTENT_VERTICAL_PADDING + 3 + trackerTopSpacing + trackerBottomSpacing)
-        else
-            QuestieCompat.SetResizeBounds(trackerBaseFrame, (TrackerLinePool.GetFirstLine().label:GetUnboundedStringWidth() + 40), trackerFontSizeZone + TRACKER_CONTENT_VERTICAL_PADDING + 2 + trackerTopSpacing + trackerBottomSpacing)
-        end
+        QuestieCompat.SetResizeBounds(
+            trackerBaseFrame,
+            math.max(TrackerHeaderFrame:GetMinWidth(), autoQuestMinWidth),
+            trackerHeaderFrame:GetHeight()
+                + math.max(trackerFontSizeZone + 3, autoQuestMinimumHeight)
+                + TRACKER_CONTENT_VERTICAL_PADDING + trackerTopSpacing + trackerBottomSpacing
+        )
+    else
+        QuestieCompat.SetResizeBounds(
+            trackerBaseFrame,
+            math.max(firstLine.label:GetUnboundedStringWidth() + 40, autoQuestMinWidth),
+            math.max(trackerFontSizeZone + 2, autoQuestMinimumHeight)
+                + TRACKER_CONTENT_VERTICAL_PADDING + trackerTopSpacing + trackerBottomSpacing
+        )
+    end
 
     TrackerUtils:UpdateVoiceOverPlayButtons()
     TrackerUtils:ShowVoiceOverPlayButtons()
+    _StartAutoQuestNoticeAnimations()
 end
 
 function QuestieTracker:UpdateWidth(trackerVarsCombined)
@@ -2495,7 +3576,11 @@ function QuestieTracker:UpdateWidth(trackerVarsCombined)
     local trackerHeaderEnabled = Questie.db.profile.trackerHeaderEnabled or (Questie.db.profile.alwaysShowTracker and not QuestieTracker:HasQuest())
     local trackerHeaderMinWidth = TrackerHeaderFrame:GetMinWidth()
     local trackerHeaderFrameWidth = trackerHeaderEnabled and math.max(trackerVarsCombined or 0, trackerHeaderMinWidth) or (trackerHeaderFrame:GetWidth() + TrackerFonts:GetHeaderFontSize() + 10)
-    local trackerHeaderlessWidth = (TrackerLinePool.GetFirstLine().label:GetUnboundedStringWidth() + 30)
+    local firstLine = TrackerLinePool.GetFirstLine()
+    local trackerHeaderlessWidth = firstLine.label:GetUnboundedStringWidth() + 30
+    if firstLine.isAutoQuestNotice then
+        trackerHeaderlessWidth = math.max(trackerHeaderlessWidth, trackerMinLineWidth + trackerMarginRight)
+    end
 
     if Questie.db.char.isTrackerExpanded then
         if trackerWidthByManual > 0 then
@@ -2531,6 +3616,15 @@ function QuestieTracker:UpdateWidth(trackerVarsCombined)
             trackerBaseFrame:SetWidth(trackerHeaderFrameWidth)
             trackerQuestFrame:SetWidth(trackerHeaderFrameWidth)
             trackerQuestFrame.ScrollChildFrame:SetWidth(trackerHeaderFrameWidth)
+        elseif firstLine and firstLine.isAutoQuestNotice then
+            local collapsedWidth = math.max(
+                trackerHeaderlessWidth,
+                trackerVarsCombined or 0,
+                trackerWidthByManual > 0 and trackerWidthByManual or 0
+            )
+            trackerBaseFrame:SetWidth(collapsedWidth)
+            trackerQuestFrame:SetWidth(collapsedWidth)
+            trackerQuestFrame.ScrollChildFrame:SetWidth(collapsedWidth)
         end
     end
 
@@ -2545,11 +3639,17 @@ function QuestieTracker:UpdateHeight()
     local trackerTopSpacing = math.max(0, tonumber(Questie.db.profile.trackerTopSpacing) or 0)
     local trackerBottomSpacing = math.max(0, tonumber(Questie.db.profile.trackerBottomSpacing) or 0)
     local headerHeight = trackerHeaderFrame:GetHeight() or (trackerFontSizeHeader + 5)
-    local trackerHeaderFrameHeight = headerHeight + trackerFontSizeZone + TRACKER_CONTENT_VERTICAL_PADDING + 3 + trackerTopSpacing + trackerBottomSpacing
+    local firstLine = TrackerLinePool.GetFirstLine()
+    local autoQuestContentHeight = _GetAutoQuestRenderedHeight()
+    local autoQuestMinimumHeight = _GetAutoQuestMinimumRenderedHeight()
+    local trackerHeaderFrameHeight = headerHeight
+        + math.max(trackerFontSizeZone + 3, autoQuestMinimumHeight)
+        + TRACKER_CONTENT_VERTICAL_PADDING + trackerTopSpacing + trackerBottomSpacing
     local trackerHeightByRatio = GetScreenHeight() * Questie.db.profile.trackerHeightRatio
     local trackerHeightByManual = Questie.db.profile.TrackerHeight
     local trackerHeightCheck = trackerHeightByManual > 0 and trackerHeightByManual or trackerHeightByRatio
-    local trackerHeaderlessHeight = trackerFontSizeZone + TRACKER_CONTENT_VERTICAL_PADDING + 2 + trackerTopSpacing + trackerBottomSpacing
+    local trackerHeaderlessHeight = math.max(trackerFontSizeZone + 2, autoQuestMinimumHeight)
+        + TRACKER_CONTENT_VERTICAL_PADDING + trackerTopSpacing + trackerBottomSpacing
 
     local function GetScrollContentHeight()
         local totalHeight = 0
@@ -2572,7 +3672,6 @@ function QuestieTracker:UpdateHeight()
         if currentLine and currentLine.label and scrollContentHeight > 0 then
             currentLine:SetHeight(currentLine.label:GetHeight() + (currentLine.contentBottomPadding or 0))
 
-            local firstLine = TrackerLinePool.GetFirstLine()
             local firstTop = firstLine and firstLine:GetTop()
             local currentBottom = currentLine:GetBottom()
 
@@ -2627,6 +3726,19 @@ function QuestieTracker:UpdateHeight()
             -- Without Header Frame
             trackerQuestFrame:SetHeight(trackerBaseFrame:GetHeight() - TRACKER_CONTENT_VERTICAL_PADDING - trackerTopSpacing - trackerBottomSpacing)
         end
+    elseif autoQuestContentHeight > 0 then
+        local hasHeader = Questie.db.profile.trackerHeaderEnabled
+            or (Questie.db.profile.alwaysShowTracker and not QuestieTracker:HasQuest())
+        local frameChromeHeight = TRACKER_CONTENT_VERTICAL_PADDING + trackerTopSpacing + trackerBottomSpacing
+            + (hasHeader and headerHeight or 0)
+        local minimumBaseHeight = frameChromeHeight + autoQuestMinimumHeight
+        local desiredBaseHeight = frameChromeHeight + autoQuestContentHeight
+        local maximumBaseHeight = math.max(minimumBaseHeight, trackerHeightCheck)
+        local visibleBaseHeight = math.min(desiredBaseHeight, maximumBaseHeight)
+
+        trackerQuestFrame.ScrollChildFrame:SetHeight(autoQuestContentHeight)
+        trackerQuestFrame:SetHeight(math.max(1, visibleBaseHeight - frameChromeHeight))
+        trackerBaseFrame:SetHeight(visibleBaseHeight)
     else
         trackerBaseFrame:SetHeight(trackerHeaderFrameHeight - TRACKER_CONTENT_VERTICAL_PADDING)
         trackerQuestFrame:SetHeight(trackerHeaderFrameHeight - TRACKER_CONTENT_VERTICAL_PADDING)

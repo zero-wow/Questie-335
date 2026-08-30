@@ -554,6 +554,59 @@ function QuestieOptions.tabs.tracker:Initialize()
                             },
                         },
                     },
+                    group_autoQuestNotices = {
+                        type = "group",
+                        order = 11,
+                        inline = true,
+                        width = 0.5,
+                        name = function() return l10n('Auto-Provided Quest Notices') end,
+                        hidden = function() return not QuestieCompat.Is335 end,
+                        args = {
+                            autoQuestNotices = {
+                                type = "toggle",
+                                order = 1,
+                                width = 1.5,
+                                name = function() return l10n('Show Auto-Provided Quests') end,
+                                desc = function() return l10n("Shows every Ascension auto-provided quest offer as a compact notice at the top of the Questie Tracker. Clicking the notice opens the server quest offer; Questie never accepts it without your confirmation.") end,
+                                disabled = function() return not Questie.db.profile.trackerEnabled end,
+                                get = function() return Questie.db.profile.trackerAutoQuestNotices end,
+                                set = function(_, value)
+                                    QuestieTracker:SetAutoQuestNoticesEnabled(value)
+                                end,
+                            },
+                            hideNativeAutoQuestNotices = {
+                                type = "toggle",
+                                order = 2,
+                                width = 1.5,
+                                name = function() return l10n('Hide Native Quest Notices') end,
+                                desc = function() return l10n("Hides the matching Ascension/Blizzard popup only after Questie has rendered a valid replacement. The native popup is restored if this feature or the tracker is disabled.") end,
+                                disabled = function()
+                                    return not Questie.db.profile.trackerEnabled
+                                        or not Questie.db.profile.trackerAutoQuestNotices
+                                end,
+                                get = function() return Questie.db.profile.trackerAutoQuestHideNative end,
+                                set = function(_, value)
+                                    QuestieTracker:SetAutoQuestHideNative(value)
+                                end,
+                            },
+                            animateAutoQuestNotices = {
+                                type = "toggle",
+                                order = 3,
+                                width = 1.5,
+                                name = function() return l10n('Animate Quest Notices') end,
+                                desc = function() return l10n('Slides new notices open and pulses the VIEW QUEST action so auto-provided quests are difficult to miss.') end,
+                                disabled = function()
+                                    return not Questie.db.profile.trackerEnabled
+                                        or not Questie.db.profile.trackerAutoQuestNotices
+                                end,
+                                get = function() return Questie.db.profile.trackerAutoQuestNoticeAnimation end,
+                                set = function(_, value)
+                                    Questie.db.profile.trackerAutoQuestNoticeAnimation = value and true or false
+                                    QuestieTracker:Update(true)
+                                end,
+                            },
+                        },
+                    },
                     group_lfgObjectives = {
                         type = "group",
                         order = 12,

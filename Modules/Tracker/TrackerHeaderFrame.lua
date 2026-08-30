@@ -582,7 +582,7 @@ function TrackerHeaderFrame.PositionTrackerHeaderFrame()
     if Questie.db.profile.moveHeaderToBottom then
         headerFrame:SetPoint("BOTTOMLEFT", trackerBaseFrame, "BOTTOMLEFT", BAR_POS_X, 5)
     else
-        if Questie.db.char.isTrackerExpanded then
+        if Questie.db.char.isTrackerExpanded or QuestieTracker:HasAutoQuestNotice() then
             headerFrame:SetPoint("TOPLEFT", trackerBaseFrame, "TOPLEFT", BAR_POS_X, BAR_POS_Y)
         else
             headerFrame:SetPoint("BOTTOMLEFT", trackerBaseFrame, "BOTTOMLEFT", BAR_POS_X, 5)

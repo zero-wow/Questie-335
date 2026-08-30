@@ -102,6 +102,14 @@ function QuestieConfigNextWidgets:GetTheme()
     return _Theme()
 end
 
+function QuestieConfigNextWidgets:SetShown(region, shown)
+    if shown then
+        region:Show()
+    else
+        region:Hide()
+    end
+end
+
 function QuestieConfigNextWidgets:ApplyBackdrop(frame, background, border, edgeSize)
     frame:SetBackdrop(_Backdrop(edgeSize))
     frame:SetBackdropColor(unpack(background or _Theme().panelBg))

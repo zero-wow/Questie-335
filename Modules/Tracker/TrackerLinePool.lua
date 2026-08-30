@@ -722,6 +722,20 @@ function TrackerLinePool.ResetLinesForChange()
         line.questItemInset = nil
         line.zoneTopInset = nil
         line.isLFGSectionLine = nil
+        line.isAutoQuestNotice = nil
+        line.autoQuestId = nil
+        line.autoQuestTitle = nil
+        line.autoQuestTargetHeight = nil
+        line.autoQuestNeedsIntro = nil
+        if line.autoQuestPanel then
+            line.autoQuestPanel:SetScript("OnUpdate", nil)
+            line.autoQuestPanel:SetAlpha(1)
+            line.autoQuestPanel:Hide()
+            if line.autoQuestPanel.action then
+                line.autoQuestPanel.action.questId = nil
+                line.autoQuestPanel.action.pulseEnabled = nil
+            end
+        end
         if line.prefixLabel then
             line.prefixLabel:Hide()
         end
@@ -772,7 +786,9 @@ function TrackerLinePool.UpdateWrappedLineWidths(trackerLineWidth)
 
     -- Updates all the line.label widths in the linePool for wrapped text only
     for _, line in pairs(linePool) do
-        if line.mode and line.contentLeftInset then
+        if line.isAutoQuestNotice and line.UpdateAutoQuestNoticeLayout then
+            line:UpdateAutoQuestNoticeLayout()
+        elseif line.mode and line.contentLeftInset then
             local fontSize
             if line.contentFontSize then
                 fontSize = line.contentFontSize
@@ -965,7 +981,7 @@ function TrackerLinePool.UpdateAlternatingRowBackgrounds()
             local background = line and line.alternatingRowBackground
             if background then
                 AnchorAlternatingBackgroundToLine(background, line, fullWidth)
-                if line.mode and line:IsShown() then
+                if line.mode and not line.isAutoQuestNotice and line:IsShown() then
                     visibleIndex = visibleIndex + 1
                     SetAlternatingBackgroundColor(background, visibleIndex, oddR, oddG, oddB, oddA, evenR, evenG, evenB, evenA)
                 else
@@ -1059,7 +1075,9 @@ function TrackerLinePool.HideUnusedLines()
 
     for i = startUnusedLines, linePoolSize do
         local line = linePool[i]
-        if line then -- Safe Guard to really concurrent triggers
+        local preserveCollapsedNotice = not Questie.db.char.isTrackerExpanded
+            and line and line.isAutoQuestNotice
+        if line and not preserveCollapsedNotice then -- Safe Guard to really concurrent triggers
             line:Hide()
             line.mode = nil
             line.ZoneId = nil
@@ -1073,6 +1091,11 @@ function TrackerLinePool.HideUnusedLines()
             line.questItemInset = nil
             line.trackTimedQuest = nil
             line.isLFGSectionLine = nil
+            line.isAutoQuestNotice = nil
+            line.autoQuestId = nil
+            line.autoQuestTitle = nil
+            line.autoQuestTargetHeight = nil
+            line.autoQuestNeedsIntro = nil
             line.expandQuest.mode = nil
             line.expandQuest.questId = nil
             line.expandZone.mode = nil
@@ -1090,6 +1113,15 @@ function TrackerLinePool.HideUnusedLines()
             end
             if line.lfgSectionAccent then
                 line.lfgSectionAccent:Hide()
+            end
+            if line.autoQuestPanel then
+                line.autoQuestPanel:SetScript("OnUpdate", nil)
+                line.autoQuestPanel:SetAlpha(1)
+                line.autoQuestPanel:Hide()
+                if line.autoQuestPanel.action then
+                    line.autoQuestPanel.action.questId = nil
+                    line.autoQuestPanel.action.pulseEnabled = nil
+                end
             end
         end
     end
@@ -1396,6 +1428,10 @@ end
 
 ---@param button string
 TrackerLinePool.OnHighlightEnter = function(self)
+    if self.isAutoQuestNotice then
+        return
+    end
+
     local highestIndex = TrackerLinePool.GetHighestIndex()
     for i = 1, highestIndex do
         local line = linePool[i]

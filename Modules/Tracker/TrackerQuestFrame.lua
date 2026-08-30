@@ -94,7 +94,9 @@ function TrackerQuestFrame.Initialize(baseFrame, headerFrame)
 end
 
 function TrackerQuestFrame:Update()
-    if Questie.db.char.isTrackerExpanded then
+    local showCollapsedAutoQuestNotice = not Questie.db.char.isTrackerExpanded
+        and QuestieTracker:HasAutoQuestNotice()
+    if Questie.db.char.isTrackerExpanded or showCollapsedAutoQuestNotice then
         questFrame:ClearAllPoints()
         TrackerQuestFrame.PositionTrackedQuestsFrame()
 

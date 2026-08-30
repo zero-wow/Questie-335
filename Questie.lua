@@ -7,6 +7,8 @@ local band = bit.band
 local QuestieOptionsDefaults = QuestieLoader:ImportModule("QuestieOptionsDefaults")
 ---@type QuestieCustomConfig
 local QuestieCustomConfig = QuestieLoader:ImportModule("QuestieCustomConfig")
+---@type QuestieConfigNext
+local QuestieConfigNext = QuestieLoader:ImportModule("QuestieConfigNext")
 ---@type QuestieEventHandler
 local QuestieEventHandler = QuestieLoader:ImportModule("QuestieEventHandler")
 ---@type QuestieQuest
@@ -78,15 +80,6 @@ function Questie:OnInitialize()
         Questie.db.profile.trackerFontOutline = ""
     end
 
-    -- Migrate unsupported private-server state to standard 3.3.5 behavior.
-    if Questie.db.profile.lowLevelStyle == Questie.LOWLEVEL_NONE and Questie.db.char.attunableTrackerQuests ~= nil then
-        Questie.db.profile.lowLevelStyle = Questie.LOWLEVEL_ALL
-    end
-    Questie.db.char.attunableTrackerQuests = nil
-
-    Questie.db.profile.listPerks = nil
-    Questie.db.char.trackedPerkIds = nil
-    Questie.db.char.untrackedPerks = nil
     Questie.db.profile.trackerFontGlobalOverride = Questie.db.profile.trackerFontGlobalOverride or TrackerFonts:GetNoneValue()
     if Questie.db.char.trackerViewMode ~= nil and Questie.db.char.trackerViewMode ~= "quests" and Questie.db.char.trackerViewMode ~= "achievements" then
         Questie.db.char.trackerViewMode = "quests"
@@ -119,6 +112,9 @@ function Questie:OnEnable()
 end
 
 function Questie:OnDisable()
+    if type(QuestieTracker.RestoreAutoQuestNativeDefaults) == "function" then
+        QuestieTracker:RestoreAutoQuestNativeDefaults()
+    end
     if Questie.IsWotlk or QuestieCompat.Is335 then
         -- Called when the addon is disabled
         WatchFrame:Show()
@@ -130,6 +126,9 @@ function Questie:RefreshConfig(_, db, profileName)
     QuestieQuest:SmoothReset()
     TrackerBaseFrame:OnProfileChange()
     QuestieCustomConfig:Refresh()
+    if type(QuestieConfigNext.Refresh) == "function" then
+        QuestieConfigNext:Refresh()
+    end
     Questie:Debug(Questie.DEBUG_DEVELOP, "Switched Ace Profile!")
 end
 

@@ -14,7 +14,6 @@ local TrackerBaseFrame = QuestieLoader:ImportModule("TrackerBaseFrame")
 ---@type TrackerLinePool
 local TrackerLinePool = QuestieLoader:ImportModule("TrackerLinePool")
 
-local C_Timer = QuestieCompat.C_Timer
 local unpack = unpack or table.unpack
 local floor = math.floor
 local max = math.max
@@ -31,8 +30,6 @@ local CARD_GUTTER = 12
 
 local private = {
     built = false,
-    slashRegistered = false,
-    warmupScheduled = false,
     frame = nil,
     cards = {},
     controls = {},
@@ -328,7 +325,7 @@ local function _CreateSearchBox(parent)
     search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     search:SetScript("OnTextChanged", function(self)
         local text = self:GetText() or ""
-        self.placeholder:SetShown(text == "" and not self:HasFocus())
+        Widgets:SetShown(self.placeholder, text == "" and not self:HasFocus())
         private.searchQuery = string.lower(text)
         if _ReflowCards then
             _ReflowCards(true)
@@ -466,6 +463,33 @@ local function _CreateTrackerWorkspace(parent)
         onClick = function()
             QuestieTracker:ResetLocation()
             QuestieTracker:Update()
+        end,
+    }))
+
+    local autoQuests = _CreateCard(parent, "Auto-Provided Quests", "Ascension quest offers shown directly at the top of the Questie Tracker.")
+    _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
+        name = "Show Auto-Provided Quests",
+        description = "Mirrors every Ascension auto-provided quest as a compact notice. Opening a notice still leaves acceptance to you.",
+        disabled = _TrackerSettingDisabled,
+        get = function() return _Profile().trackerAutoQuestNotices end,
+        set = function(value) QuestieTracker:SetAutoQuestNoticesEnabled(value) end,
+        onChanged = function() _RefreshControls(false) end,
+    }))
+    _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
+        name = "Hide Native Quest Notices",
+        description = "Hides matching native and DialogueUI offer popups only after Questie has rendered its replacement.",
+        disabled = function() return _TrackerSettingDisabled() or not _Profile().trackerAutoQuestNotices end,
+        get = function() return _Profile().trackerAutoQuestHideNative end,
+        set = function(value) QuestieTracker:SetAutoQuestHideNative(value) end,
+    }))
+    _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
+        name = "Animate Quest Notices",
+        description = "Slides new notices open and pulses the View Quest action.",
+        disabled = function() return _TrackerSettingDisabled() or not _Profile().trackerAutoQuestNotices end,
+        get = function() return _Profile().trackerAutoQuestNoticeAnimation end,
+        set = function(value)
+            _Profile().trackerAutoQuestNoticeAnimation = value and true or false
+            QuestieTracker:Update(true)
         end,
     }))
 
@@ -748,7 +772,7 @@ _ReflowCards = function(resetScroll)
         end
     end
 
-    frame.noResults:SetShown(visibleCards == 0)
+    Widgets:SetShown(frame.noResults, visibleCards == 0)
     if visibleCards == 0 then
         frame.noResults:SetPoint("TOP", scroll.content, "TOP", 0, -28)
         y = 80
@@ -999,23 +1023,6 @@ function QuestieConfigNext:Prime()
     return _CreateFrame() ~= nil
 end
 
-function QuestieConfigNext:ScheduleWarmup(delay)
-    if private.built or private.warmupScheduled then
-        return
-    end
-    private.warmupScheduled = true
-    local attempts = 0
-    local function warm()
-        attempts = attempts + 1
-        if QuestieConfigNext:Prime() or attempts >= 10 then
-            private.warmupScheduled = false
-            return
-        end
-        C_Timer.After(0.5, warm)
-    end
-    C_Timer.After(tonumber(delay) or 0.25, warm)
-end
-
 function QuestieConfigNext:Refresh()
     if not private.built then
         return
@@ -1072,14 +1079,4 @@ function QuestieConfigNext:HandleSlash(input)
     else
         Questie:Print("/qcnew [tracker | open | close | reset]")
     end
-end
-
-function QuestieConfigNext:RegisterSlashCommands()
-    if private.slashRegistered then
-        return
-    end
-    Questie:RegisterChatCommand("qcnew", function(input)
-        QuestieConfigNext:HandleSlash(input)
-    end)
-    private.slashRegistered = true
 end
