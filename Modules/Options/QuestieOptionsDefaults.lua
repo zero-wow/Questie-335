@@ -126,6 +126,8 @@ function QuestieOptionsDefaults:Load()
             trackerZoneDividerColor = { 0.16, 0.78, 0.72, 0.28 },
             trackerZoneHeaderColor = { 1.0, 0.0, 1.0 },
             trackerAlternatingRowsEnabled = true,
+            trackerAlternatingRowMode = "questBlocks",
+            trackerAlternatingBlockEdgePadding = 2,
             trackerAlternatingRowColorOdd = { 0.018, 0.022, 0.031, 0.32 },
             trackerAlternatingRowColorEven = { 0.082, 0.855, 0.804, 0.08 },
             trackerAlternatingRowPaletteVersion = 0,

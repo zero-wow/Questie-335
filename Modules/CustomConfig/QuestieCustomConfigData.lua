@@ -155,7 +155,7 @@ QuestieCustomConfigData.tabs = {
         key = "colorways_tab",
         alias = "colorways",
         title = "Colorways",
-        subtitle = "Objective icons, interface themes, and coordinated tracker rows",
+        subtitle = "Objective icons, interface themes, and coordinated tracker backgrounds",
     },
     {
         key = "tracker_tab",

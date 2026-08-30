@@ -824,11 +824,62 @@ local function GetAlternatingRowColor(setting, fallback)
         tonumber(color[4]) or fallback[4]
 end
 
+local function SetAlternatingBackgroundColor(background, alternateIndex, oddR, oddG, oddB, oddA, evenR, evenG, evenB, evenA)
+    local alpha
+    if alternateIndex % 2 == 1 then
+        background:SetVertexColor(oddR, oddG, oddB, oddA)
+        alpha = oddA
+    else
+        background:SetVertexColor(evenR, evenG, evenB, evenA)
+        alpha = evenA
+    end
+
+    if alpha > 0 then
+        background:Show()
+    else
+        background:Hide()
+    end
+end
+
+local function GetQuestBlockKey(line)
+    if not line or line.isLFGSectionLine then
+        return nil
+    end
+
+    if line.mode ~= "quest" and line.mode ~= "achieve" and line.mode ~= "objective" then
+        return nil
+    end
+
+    local quest = line.Quest
+    local questId = type(quest) == "table" and quest.Id or quest
+    return questId
+end
+
+local function AnchorAlternatingBackgroundToLine(background, line)
+    background:ClearAllPoints()
+    background:SetAllPoints(line)
+end
+
+local function AnchorAlternatingBackgroundToQuestBlock(background, firstIndex, lastIndex, edgePadding)
+    local firstLine = linePool[firstIndex]
+    local lastLine = linePool[lastIndex]
+    local previousLine = linePool[firstIndex - 1]
+    local availableTop = math.max(0, tonumber(previousLine and previousLine.contentBottomPadding) or 0)
+    local availableBottom = math.max(0, tonumber(lastLine.contentBottomPadding) or 0)
+    local topPadding = math.min(edgePadding, availableTop)
+    local bottomPadding = math.min(edgePadding, availableBottom)
+
+    background:ClearAllPoints()
+    background:SetPoint("TOPLEFT", firstLine, "TOPLEFT", 0, topPadding)
+    background:SetPoint("BOTTOMRIGHT", lastLine, "BOTTOMRIGHT", 0, availableBottom - bottomPadding)
+end
+
 function TrackerLinePool.UpdateAlternatingRowBackgrounds()
     local profile = Questie.db and Questie.db.profile
     local enabled = profile and profile.trackerAlternatingRowsEnabled == true
+    local mode = profile and profile.trackerAlternatingRowMode == "rows" and "rows" or "questBlocks"
+    local edgePadding = math.max(0, math.min(8, tonumber(profile and profile.trackerAlternatingBlockEdgePadding) or 2))
     local highestIndex = lineIndex > linePoolSize and linePoolSize or lineIndex
-    local visibleIndex = 0
     local oddR, oddG, oddB, oddA = GetAlternatingRowColor("trackerAlternatingRowColorOdd", alternatingRowFallbackOdd)
     local evenR, evenG, evenB, evenA = GetAlternatingRowColor("trackerAlternatingRowColorEven", alternatingRowFallbackEven)
 
@@ -843,29 +894,55 @@ function TrackerLinePool.UpdateAlternatingRowBackgrounds()
         return
     end
 
-    for i = 1, highestIndex do
-        local line = linePool[i]
-        local background = line and line.alternatingRowBackground
-        if background then
-            if line.mode and line:IsShown() then
-                visibleIndex = visibleIndex + 1
-                if visibleIndex % 2 == 1 then
-                    background:SetVertexColor(oddR, oddG, oddB, oddA)
-                    if oddA > 0 then
-                        background:Show()
-                    else
-                        background:Hide()
+    if mode == "questBlocks" then
+        local blockIndex = 0
+        local i = 1
+        while i <= highestIndex do
+            local line = linePool[i]
+            local blockKey = GetQuestBlockKey(line)
+            local isBlockStart = line and (line.mode == "quest" or line.mode == "achieve")
+            if isBlockStart and blockKey and line:IsShown() then
+                local lastIndex = i
+                while lastIndex < highestIndex do
+                    local nextLine = linePool[lastIndex + 1]
+                    if not nextLine or not nextLine:IsShown() or nextLine.mode ~= "objective" or GetQuestBlockKey(nextLine) ~= blockKey then
+                        break
                     end
-                else
-                    background:SetVertexColor(evenR, evenG, evenB, evenA)
-                    if evenA > 0 then
-                        background:Show()
-                    else
-                        background:Hide()
+                    lastIndex = lastIndex + 1
+                end
+
+                blockIndex = blockIndex + 1
+                local background = line.alternatingRowBackground
+                AnchorAlternatingBackgroundToQuestBlock(background, i, lastIndex, edgePadding)
+                SetAlternatingBackgroundColor(background, blockIndex, oddR, oddG, oddB, oddA, evenR, evenG, evenB, evenA)
+
+                for childIndex = i + 1, lastIndex do
+                    local childLine = linePool[childIndex]
+                    if childLine and childLine.alternatingRowBackground then
+                        childLine.alternatingRowBackground:Hide()
                     end
                 end
+                i = lastIndex + 1
             else
-                background:Hide()
+                if line and line.alternatingRowBackground then
+                    line.alternatingRowBackground:Hide()
+                end
+                i = i + 1
+            end
+        end
+    else
+        local visibleIndex = 0
+        for i = 1, highestIndex do
+            local line = linePool[i]
+            local background = line and line.alternatingRowBackground
+            if background then
+                AnchorAlternatingBackgroundToLine(background, line)
+                if line.mode and line:IsShown() then
+                    visibleIndex = visibleIndex + 1
+                    SetAlternatingBackgroundColor(background, visibleIndex, oddR, oddG, oddB, oddA, evenR, evenG, evenB, evenA)
+                else
+                    background:Hide()
+                end
             end
         end
     end

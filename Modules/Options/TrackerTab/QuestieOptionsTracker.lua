@@ -1361,12 +1361,55 @@ function QuestieOptions.tabs.tracker:Initialize()
                                     TrackerLinePool.UpdateAlternatingRowBackgrounds()
                                 end,
                             },
+                            trackerAlternatingRowMode = {
+                                type = "select",
+                                order = 9,
+                                width = 1.5,
+                                name = function() return l10n("Alternating Background Mode") end,
+                                desc = function() return l10n("Quest Blocks gives each quest title and all of its objectives one continuous alternating background. Individual Rows alternates every visible tracker line, including zone headers.") end,
+                                values = function()
+                                    return {
+                                        questBlocks = l10n("Quest Blocks"),
+                                        rows = l10n("Individual Rows"),
+                                    }
+                                end,
+                                disabled = function() return not Questie.db.profile.trackerEnabled or not Questie.db.profile.trackerAlternatingRowsEnabled end,
+                                get = function()
+                                    return Questie.db.profile.trackerAlternatingRowMode == "rows" and "rows" or "questBlocks"
+                                end,
+                                set = function(_, value)
+                                    Questie.db.profile.trackerAlternatingRowMode = value == "rows" and "rows" or "questBlocks"
+                                    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+                                end,
+                            },
+                            trackerAlternatingBlockEdgePadding = {
+                                type = "range",
+                                order = 10,
+                                width = 1.5,
+                                name = function() return l10n("Block Edge Padding") end,
+                                desc = function() return l10n("Extends a quest-block background into the existing space above and below its text without changing tracker layout or quest spacing.") end,
+                                min = 0,
+                                max = 8,
+                                step = 1,
+                                disabled = function()
+                                    return not Questie.db.profile.trackerEnabled
+                                        or not Questie.db.profile.trackerAlternatingRowsEnabled
+                                        or Questie.db.profile.trackerAlternatingRowMode == "rows"
+                                end,
+                                get = function()
+                                    return math.max(0, math.min(8, tonumber(Questie.db.profile.trackerAlternatingBlockEdgePadding) or 2))
+                                end,
+                                set = function(_, value)
+                                    Questie.db.profile.trackerAlternatingBlockEdgePadding = math.max(0, math.min(8, tonumber(value) or 2))
+                                    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+                                end,
+                            },
                             trackerAlternatingRowColorOdd = {
                                 type = "color",
-                                order = 9,
+                                order = 11,
                                 hasAlpha = true,
-                                name = function() return l10n("Odd Row Background") end,
-                                desc = function() return l10n("Sets the background color and alpha for the first, third, and following odd tracker rows.") end,
+                                name = function() return l10n("Odd Alternating Background") end,
+                                desc = function() return l10n("Sets the color and alpha for the first, third, and following alternating rows or quest blocks.") end,
                                 disabled = function()
                                     return not Questie.db.profile.trackerEnabled or not Questie.db.profile.trackerAlternatingRowsEnabled
                                 end,
@@ -1381,10 +1424,10 @@ function QuestieOptions.tabs.tracker:Initialize()
                             },
                             trackerAlternatingRowColorEven = {
                                 type = "color",
-                                order = 10,
+                                order = 12,
                                 hasAlpha = true,
-                                name = function() return l10n("Even Row Background") end,
-                                desc = function() return l10n("Sets the background color and alpha for the second, fourth, and following even tracker rows.") end,
+                                name = function() return l10n("Even Alternating Background") end,
+                                desc = function() return l10n("Sets the color and alpha for the second, fourth, and following alternating rows or quest blocks.") end,
                                 disabled = function()
                                     return not Questie.db.profile.trackerEnabled or not Questie.db.profile.trackerAlternatingRowsEnabled
                                 end,
