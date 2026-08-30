@@ -1351,7 +1351,7 @@ function QuestieOptions.tabs.tracker:Initialize()
                                 order = 8,
                                 width = 3,
                                 name = function() return l10n("Alternating Row Backgrounds") end,
-                                desc = function() return l10n("Shows alternating background colors behind visible tracker rows. Wrapped text remains inside a single row, and colorways never enable this option automatically.") end,
+                                desc = function() return l10n("Shows alternating background colors behind visible tracker rows. Wrapped text remains inside a single row, and colorways never change this option automatically.") end,
                                 disabled = function() return not Questie.db.profile.trackerEnabled end,
                                 get = function()
                                     return Questie.db.profile.trackerAlternatingRowsEnabled

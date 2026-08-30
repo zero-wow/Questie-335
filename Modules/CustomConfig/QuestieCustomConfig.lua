@@ -2242,7 +2242,7 @@ local function _RenderColorwaysPage(host)
     local cardHeight = 54
     local cardGap = 5
     local firstRowTop = -8
-    local shellSection = _CreateNativeSection(page, iconSection, "Interface Colorways", "Recolors the /qc shell and supplies matching alternating tracker-row colors. Applying one never enables row backgrounds or changes map colors.", 1)
+    local shellSection = _CreateNativeSection(page, iconSection, "Interface Colorways", "Recolors the /qc shell and supplies matching alternating tracker-row colors. Applying one never changes row-background visibility or map colors.", 1)
 
     local previousShellCard
 

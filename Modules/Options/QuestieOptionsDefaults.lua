@@ -125,7 +125,7 @@ function QuestieOptionsDefaults:Load()
             trackerHeaderAccentColor = { 0.16, 0.78, 0.72, 0.38 },
             trackerZoneDividerColor = { 0.16, 0.78, 0.72, 0.28 },
             trackerZoneHeaderColor = { 1.0, 0.0, 1.0 },
-            trackerAlternatingRowsEnabled = false,
+            trackerAlternatingRowsEnabled = true,
             trackerAlternatingRowColorOdd = { 0.018, 0.022, 0.031, 0.32 },
             trackerAlternatingRowColorEven = { 0.082, 0.855, 0.804, 0.08 },
             trackerAlternatingRowPaletteVersion = 0,

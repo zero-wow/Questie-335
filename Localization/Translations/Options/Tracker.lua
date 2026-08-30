@@ -1493,7 +1493,7 @@ local trackerOptionsLocales = {
         ["esES"] = true,
         ["frFR"] = true,
     },
-    ["Shows alternating background colors behind visible tracker rows. Wrapped text remains inside a single row, and colorways never enable this option automatically."] = {
+    ["Shows alternating background colors behind visible tracker rows. Wrapped text remains inside a single row, and colorways never change this option automatically."] = {
         ["ptBR"] = true,
         ["ruRU"] = true,
         ["deDE"] = true,
