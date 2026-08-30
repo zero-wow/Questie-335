@@ -88,7 +88,6 @@ local lfgMirrorSnapshot
 local lfgMirrorRefreshScheduled = false
 local lfgNativeFrame
 local lfgRenderedLines = {}
-local lfgCombatFallbackActive = false
 local _RequestLFGObjectiveMirrorRefresh
 
 local function _TrimLFGMirrorText(value)
@@ -128,6 +127,31 @@ local function _GetLFGProfileColor(key, defaultRed, defaultGreen, defaultBlue, d
         tonumber(color and color[2]) or defaultGreen,
         tonumber(color and color[3]) or defaultBlue,
         tonumber(color and color[4]) or defaultAlpha
+end
+
+local function _FormatLFGObjectiveRow(row)
+    local text = _StripLFGMirrorFormatting(row and row.plainText)
+    local lowerText = string.lower(text)
+    local current, required = string.match(text, "(%d+)%s*/%s*(%d+)")
+    current = tonumber(current)
+    required = tonumber(required)
+
+    local isFailed = row and row.failedHint
+        or string.find(lowerText, "failed", 1, true)
+        or string.find(lowerText, "failure", 1, true)
+    local isComplete = row and row.completeHint
+        or (current and required and required > 0 and current >= required)
+        or (not string.find(lowerText, "incomplete", 1, true) and string.find(lowerText, "complete", 1, true))
+
+    if isFailed then
+        return _ColorizeLFGMirrorText(text, 1, 0.18, 0.18)
+    elseif isComplete then
+        return _ColorizeLFGMirrorText(text, 0.2, 1, 0.35)
+    elseif current and required and required > 0 then
+        return QuestieLib:GetPfQuestProgressColorHex(current, required) .. text .. "|r"
+    end
+
+    return _ColorizeLFGMirrorText(text, 0.92, 0.92, 0.92)
 end
 
 local function _CollectLFGFontStrings(frame, output, visited, depth)
@@ -262,6 +286,44 @@ local function _BuildLFGMirrorSnapshot(frame)
     }
 end
 
+local function _RefreshRenderedLFGSnapshot(snapshot)
+    if not snapshot or #lfgRenderedLines == 0 then
+        return false
+    end
+
+    local rows = snapshot.rows or {}
+    local isCollapsed = Questie.db.char.collapsedZones[LFG_MIRROR_ZONE_KEY]
+    local requiredLines = isCollapsed and 1 or (#rows + 1)
+    if #lfgRenderedLines ~= requiredLines then
+        return false
+    end
+
+    for _, line in ipairs(lfgRenderedLines) do
+        if not line or not line.isLFGSectionLine or not line.label then
+            return false
+        end
+    end
+
+    local displayTitle = _StripLFGMirrorFormatting(snapshot.title)
+    if displayTitle == "" then
+        displayTitle = l10n("Dungeon Objectives")
+    end
+
+    local red, green, blue = _GetLFGProfileColor("trackerHeaderTextColor", 1, 0.82, 0, 1)
+    if isCollapsed then
+        displayTitle = displayTitle .. " +"
+    end
+    lfgRenderedLines[1].label:SetText(_ColorizeLFGMirrorText(displayTitle, red, green, blue))
+
+    if not isCollapsed then
+        for index, row in ipairs(rows) do
+            lfgRenderedLines[index + 1].label:SetText(_FormatLFGObjectiveRow(row))
+        end
+    end
+
+    return true
+end
+
 local function _CollectLFGFrames(frame, output, visited, depth)
     if not frame or visited[frame] or depth > 16 then
         return
@@ -306,9 +368,21 @@ end
 
 local function _SuppressNativeLFGTracker(frame)
     if not frame then
-        return
+        return false
     end
 
+    if InCombatLockdown() and frame.__Questie335LFGSuppressed then
+        return true
+    end
+
+    if InCombatLockdown() and frame.IsProtected then
+        local ok, isProtected = pcall(frame.IsProtected, frame)
+        if ok and isProtected then
+            return false
+        end
+    end
+
+    local newlySuppressed = not frame.__Questie335LFGSuppressed
     if not frame.__Questie335LFGSuppressed then
         frame.__Questie335LFGOriginalAlpha = frame.GetAlpha and frame:GetAlpha() or 1
         frame.__Questie335LFGMouseState = {
@@ -319,7 +393,21 @@ local function _SuppressNativeLFGTracker(frame)
     end
 
     if frame.SetAlpha then
-        pcall(frame.SetAlpha, frame, 0)
+        local ok = pcall(frame.SetAlpha, frame, 0)
+        if not ok then
+            if newlySuppressed then
+                frame.__Questie335LFGSuppressed = nil
+                frame.__Questie335LFGOriginalAlpha = nil
+                frame.__Questie335LFGMouseState = nil
+            end
+            return false
+        end
+    end
+
+    -- Mouse-state changes are unnecessary for a frame already suppressed before combat,
+    -- and avoiding them keeps this path clear of protected child controls.
+    if InCombatLockdown() then
+        return true
     end
 
     local mouseState = frame.__Questie335LFGMouseState
@@ -339,6 +427,8 @@ local function _SuppressNativeLFGTracker(frame)
             end
         end
     end
+
+    return true
 end
 
 local function _GetNativeLFGTracker()
@@ -397,7 +487,13 @@ function QuestieTracker:RefreshLFGObjectiveMirror()
     end
 
     lfgMirrorSnapshot = snapshot
-    if not lfgCombatFallbackActive and not InCombatLockdown() and #lfgRenderedLines > 0 then
+    if InCombatLockdown() then
+        if _RefreshRenderedLFGSnapshot(snapshot) then
+            _SuppressNativeLFGTracker(frame)
+        else
+            _RestoreNativeLFGTracker(frame)
+        end
+    elseif #lfgRenderedLines > 0 then
         _SuppressNativeLFGTracker(frame)
     end
     return previousSignature ~= snapshot.signature
@@ -412,9 +508,7 @@ _RequestLFGObjectiveMirrorRefresh = function()
     C_Timer.After(0, function()
         lfgMirrorRefreshScheduled = false
         local changed = QuestieTracker:RefreshLFGObjectiveMirror()
-        if InCombatLockdown() then
-            QuestieTracker:SetLFGObjectiveCombatFallback(true)
-        elseif changed and QuestieTracker.started then
+        if changed and not InCombatLockdown() and QuestieTracker.started then
             QuestieCombatQueue:Queue(function()
                 QuestieTracker:Update(true)
             end)
@@ -431,7 +525,6 @@ function QuestieTracker:SetLFGObjectiveMirrorEnabled(enabled)
     if not enabled then
         _RestoreNativeLFGTracker()
         lfgMirrorSnapshot = nil
-        lfgCombatFallbackActive = false
     else
         QuestieTracker:RefreshLFGObjectiveMirror()
     end
@@ -447,18 +540,11 @@ function QuestieTracker:SetLFGObjectiveCombatFallback(inCombat)
     end
 
     if inCombat then
-        lfgCombatFallbackActive = true
-        _RestoreNativeLFGTracker()
-        for _, line in ipairs(lfgRenderedLines) do
-            line:Hide()
-        end
-    else
-        lfgCombatFallbackActive = false
-        if QuestieTracker.started then
-            QuestieCombatQueue:Queue(function()
-                QuestieTracker:Update(true)
-            end)
-        end
+        QuestieTracker:RefreshLFGObjectiveMirror()
+    elseif QuestieTracker.started then
+        QuestieCombatQueue:Queue(function()
+            QuestieTracker:Update(true)
+        end)
     end
 end
 
@@ -962,7 +1048,6 @@ function QuestieTracker:Disable()
     Questie.db.profile.trackerEnabled = false
     _RestoreNativeLFGTracker()
     lfgMirrorSnapshot = nil
-    lfgCombatFallbackActive = false
     QuestieTracker:ResetDurabilityFrame()
     QuestieTracker:ResetVoiceOverFrame()
     Questie.db.char.TrackedQuests = {}
@@ -985,7 +1070,6 @@ function QuestieTracker:Toggle()
         Questie.db.profile.trackerEnabled = false
         _RestoreNativeLFGTracker()
         lfgMirrorSnapshot = nil
-        lfgCombatFallbackActive = false
     else
         Questie:Debug(Questie.DEBUG_DEVELOP, "[QuestieTracker:Toggle] - Tracker Enabled.")
         Questie.db.profile.trackerEnabled = true
@@ -1022,7 +1106,6 @@ function QuestieTracker:Update(forceUpdate)
     if (not Questie.db.profile.trackerEnabled or QuestieTracker.disableHooks == true) then
         _RestoreNativeLFGTracker()
         lfgMirrorSnapshot = nil
-        lfgCombatFallbackActive = false
         if trackerBaseFrame and trackerBaseFrame:IsShown() then
             QuestieCombatQueue:Queue(function()
                 if Questie.db.profile.stickyDurabilityFrame then
@@ -1188,31 +1271,6 @@ function QuestieTracker:Update(forceUpdate)
         targetLine.lfgSectionAccent:SetVertexColor(lfgAccentR, lfgAccentG, lfgAccentB, lfgAccentA)
         targetLine.lfgSectionAccent:Show()
         targetLine.isLFGSectionLine = true
-    end
-
-    local function FormatLFGObjectiveRow(row)
-        local text = _StripLFGMirrorFormatting(row and row.plainText)
-        local lowerText = string.lower(text)
-        local current, required = string.match(text, "(%d+)%s*/%s*(%d+)")
-        current = tonumber(current)
-        required = tonumber(required)
-
-        local isFailed = row and row.failedHint
-            or string.find(lowerText, "failed", 1, true)
-            or string.find(lowerText, "failure", 1, true)
-        local isComplete = row and row.completeHint
-            or (current and required and required > 0 and current >= required)
-            or (not string.find(lowerText, "incomplete", 1, true) and string.find(lowerText, "complete", 1, true))
-
-        if isFailed then
-            return _ColorizeLFGMirrorText(text, 1, 0.18, 0.18)
-        elseif isComplete then
-            return _ColorizeLFGMirrorText(text, 0.2, 1, 0.35)
-        elseif current and required and required > 0 then
-            return QuestieLib:GetPfQuestProgressColorHex(current, required) .. text .. "|r"
-        end
-
-        return _ColorizeLFGMirrorText(text, 0.92, 0.92, 0.92)
     end
 
     --- Applies tracker width constraints and multi-line height for a label.
@@ -1384,7 +1442,7 @@ function QuestieTracker:Update(forceUpdate)
             HideObjectivePrefix(line)
             line.label:ClearAllPoints()
             line.label:SetPoint("TOPLEFT", line, "TOPLEFT", lfgObjectiveMarginLeft, 0)
-            line.label:SetText(FormatLFGObjectiveRow(row))
+            line.label:SetText(_FormatLFGObjectiveRow(row))
 
             trackerLineWidth = math.max(trackerLineWidth, ApplyWrappedTrackerLabel(
                 line.label,
@@ -2303,8 +2361,7 @@ function QuestieTracker:Update(forceUpdate)
 
     -- Any position beyond the number of rendered zone blocks resolves to the bottom.
     _UpdateLFGObjectives()
-    if lfgRendered and lfgNativeFrame and not InCombatLockdown() then
-        lfgCombatFallbackActive = false
+    if lfgRendered and lfgNativeFrame then
         _SuppressNativeLFGTracker(lfgNativeFrame)
     else
         _RestoreNativeLFGTracker(lfgNativeFrame)

@@ -82,7 +82,7 @@ function QuestieOptionsDefaults:Load()
             trackerShowQuestLevel = true,
             collapseCompletedQuests = false,
             collapseCompletedQuestsCurrentZoneOnly = false,
-            trackerMirrorLFGObjectives = false,
+            trackerMirrorLFGObjectives = true,
             trackerLFGObjectivePosition = 0,
             trackerCollapseDirection = "normal",
             hideCompletedQuestObjectives = false,
