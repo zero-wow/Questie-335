@@ -63,6 +63,9 @@ function QuestieOptions.tabs.auto:Initialize()
                 set = function (info, value)
                     Questie.db.profile.autoaccept = value
                     Questie:Debug(Questie.DEBUG_DEVELOP, "Auto Accept toggled to:", value)
+                    if value then
+                        QuestieTracker:RefreshAutoQuestAutoAccept()
+                    end
                 end,
             },
             npcrules_group = {

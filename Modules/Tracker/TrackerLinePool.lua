@@ -734,6 +734,20 @@ function TrackerLinePool.ResetLinesForChange()
             if line.autoQuestPanel.action then
                 line.autoQuestPanel.action.questId = nil
                 line.autoQuestPanel.action.pulseEnabled = nil
+                line.autoQuestPanel.action.pulseTime = nil
+                line.autoQuestPanel.action.hovered = nil
+                line.autoQuestPanel.action:SetAlpha(1)
+                line.autoQuestPanel.action.glow:SetAlpha(0)
+                line.autoQuestPanel.action:Enable()
+            end
+            if line.autoQuestPanel.accept then
+                line.autoQuestPanel.accept.questId = nil
+                line.autoQuestPanel.accept.pulseEnabled = nil
+                line.autoQuestPanel.accept.pulseTime = nil
+                line.autoQuestPanel.accept.hovered = nil
+                line.autoQuestPanel.accept:SetAlpha(1)
+                line.autoQuestPanel.accept.glow:SetAlpha(0)
+                line.autoQuestPanel.accept:Enable()
             end
         end
         if line.prefixLabel then
@@ -1121,6 +1135,20 @@ function TrackerLinePool.HideUnusedLines()
                 if line.autoQuestPanel.action then
                     line.autoQuestPanel.action.questId = nil
                     line.autoQuestPanel.action.pulseEnabled = nil
+                    line.autoQuestPanel.action.pulseTime = nil
+                    line.autoQuestPanel.action.hovered = nil
+                    line.autoQuestPanel.action:SetAlpha(1)
+                    line.autoQuestPanel.action.glow:SetAlpha(0)
+                    line.autoQuestPanel.action:Enable()
+                end
+                if line.autoQuestPanel.accept then
+                    line.autoQuestPanel.accept.questId = nil
+                    line.autoQuestPanel.accept.pulseEnabled = nil
+                    line.autoQuestPanel.accept.pulseTime = nil
+                    line.autoQuestPanel.accept.hovered = nil
+                    line.autoQuestPanel.accept:SetAlpha(1)
+                    line.autoQuestPanel.accept.glow:SetAlpha(0)
+                    line.autoQuestPanel.accept:Enable()
                 end
             end
         end

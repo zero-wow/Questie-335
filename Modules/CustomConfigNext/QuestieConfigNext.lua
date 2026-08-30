@@ -469,7 +469,7 @@ local function _CreateTrackerWorkspace(parent)
     local autoQuests = _CreateCard(parent, "Auto-Provided Quests", "Ascension quest offers shown directly at the top of the Questie Tracker.")
     _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
         name = "Show Auto-Provided Quests",
-        description = "Mirrors every Ascension auto-provided quest as a compact notice. Opening a notice still leaves acceptance to you.",
+        description = "Mirrors every Ascension auto-provided quest as a compact notice. The global Auto Accept Quests setting also applies.",
         disabled = _TrackerSettingDisabled,
         get = function() return _Profile().trackerAutoQuestNotices end,
         set = function(value) QuestieTracker:SetAutoQuestNoticesEnabled(value) end,
@@ -483,8 +483,15 @@ local function _CreateTrackerWorkspace(parent)
         set = function(value) QuestieTracker:SetAutoQuestHideNative(value) end,
     }))
     _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
+        name = "Space Accepts Auto-Provided Quests",
+        description = "Temporarily binds Space to ACCEPT while an actionable notice is visible, then restores the previous Space behavior.",
+        disabled = function() return _TrackerSettingDisabled() or not _Profile().trackerAutoQuestNotices end,
+        get = function() return _Profile().trackerAutoQuestSpaceAccept end,
+        set = function(value) QuestieTracker:SetAutoQuestSpaceAccept(value) end,
+    }))
+    _AddControl(autoQuests, Widgets:CreateToggle(autoQuests, {
         name = "Animate Quest Notices",
-        description = "Slides new notices open and pulses the View Quest action.",
+        description = "Slides new notices open and pulses the Accept action.",
         disabled = function() return _TrackerSettingDisabled() or not _Profile().trackerAutoQuestNotices end,
         get = function() return _Profile().trackerAutoQuestNoticeAnimation end,
         set = function(value)

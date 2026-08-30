@@ -567,7 +567,7 @@ function QuestieOptions.tabs.tracker:Initialize()
                                 order = 1,
                                 width = 1.5,
                                 name = function() return l10n('Show Auto-Provided Quests') end,
-                                desc = function() return l10n("Shows every Ascension auto-provided quest offer as a compact notice at the top of the Questie Tracker. Clicking the notice opens the server quest offer; Questie never accepts it without your confirmation.") end,
+                                desc = function() return l10n("Shows every Ascension auto-provided quest offer as a compact notice at the top of the Questie Tracker. Questie's global Auto Accept Quests setting also applies to these offers.") end,
                                 disabled = function() return not Questie.db.profile.trackerEnabled end,
                                 get = function() return Questie.db.profile.trackerAutoQuestNotices end,
                                 set = function(_, value)
@@ -594,7 +594,7 @@ function QuestieOptions.tabs.tracker:Initialize()
                                 order = 3,
                                 width = 1.5,
                                 name = function() return l10n('Animate Quest Notices') end,
-                                desc = function() return l10n('Slides new notices open and pulses the VIEW QUEST action so auto-provided quests are difficult to miss.') end,
+                                desc = function() return l10n('Slides new notices open and pulses the ACCEPT action so auto-provided quests are difficult to miss.') end,
                                 disabled = function()
                                     return not Questie.db.profile.trackerEnabled
                                         or not Questie.db.profile.trackerAutoQuestNotices
@@ -603,6 +603,21 @@ function QuestieOptions.tabs.tracker:Initialize()
                                 set = function(_, value)
                                     Questie.db.profile.trackerAutoQuestNoticeAnimation = value and true or false
                                     QuestieTracker:Update(true)
+                                end,
+                            },
+                            spaceAcceptAutoQuestNotices = {
+                                type = "toggle",
+                                order = 4,
+                                width = 1.5,
+                                name = function() return l10n('Space Accepts Auto-Provided Quests') end,
+                                desc = function() return l10n('Temporarily binds Space to ACCEPT only while an actionable Questie notice is visible. The previous Space behavior is restored automatically when the notice closes.') end,
+                                disabled = function()
+                                    return not Questie.db.profile.trackerEnabled
+                                        or not Questie.db.profile.trackerAutoQuestNotices
+                                end,
+                                get = function() return Questie.db.profile.trackerAutoQuestSpaceAccept end,
+                                set = function(_, value)
+                                    QuestieTracker:SetAutoQuestSpaceAccept(value)
                                 end,
                             },
                         },
