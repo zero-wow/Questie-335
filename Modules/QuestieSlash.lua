@@ -61,6 +61,7 @@ function QuestieSlash.HandleCommands(input)
         print(Questie:Colorize("/questie journey - " .. l10n("Toggles the My Journey window"), "yellow"));
         print(Questie:Colorize("/questie tracker [show/hide/reset] - " .. l10n("Toggles the Tracker. Add 'show', 'hide', 'reset' to explicit show/hide or reset the Tracker"), "yellow"));
         print(Questie:Colorize("/qc - Opens the separate Questie Command Center test panel", "yellow"));
+        print(Questie:Colorize("/qcnew - Opens the native next-generation Tracker settings panel", "yellow"));
         print(Questie:Colorize("/questie flex - " .. l10n("Flex the amount of quests you have completed so far"), "yellow"));
         print(Questie:Colorize("/questie doable [questID] - " .. l10n("Prints whether you are eligibile to do a quest"), "yellow"));
         print(Questie:Colorize("/questie version - " .. l10n("Prints Questie and client version info"), "yellow"));
