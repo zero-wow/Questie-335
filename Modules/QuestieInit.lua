@@ -73,8 +73,6 @@ local QuestieCombatQueue = QuestieLoader:ImportModule("QuestieCombatQueue")
 local QuestieSlash = QuestieLoader:ImportModule("QuestieSlash")
 ---@type QuestieCustomConfig
 local QuestieCustomConfig = QuestieLoader:ImportModule("QuestieCustomConfig")
----@type QuestieConfigNext
-local QuestieConfigNext = QuestieLoader:ImportModule("QuestieConfigNext")
 ---@type QuestXP
 local QuestXP = QuestieLoader:ImportModule("QuestXP")
 ---@type Tutorial
@@ -275,8 +273,6 @@ QuestieInit.Stages[3] = function() -- run as a coroutine
 
     QuestieSlash.RegisterSlashCommands()
     QuestieCustomConfig:RegisterSlashCommands()
-    QuestieConfigNext:RegisterSlashCommands()
-    QuestieConfigNext:ScheduleWarmup(0.25)
     QuestieCustomConfig:ScheduleWarmup(1.0)
 
     coYield()

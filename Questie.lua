@@ -7,8 +7,6 @@ local band = bit.band
 local QuestieOptionsDefaults = QuestieLoader:ImportModule("QuestieOptionsDefaults")
 ---@type QuestieCustomConfig
 local QuestieCustomConfig = QuestieLoader:ImportModule("QuestieCustomConfig")
----@type QuestieConfigNext
-local QuestieConfigNext = QuestieLoader:ImportModule("QuestieConfigNext")
 ---@type QuestieEventHandler
 local QuestieEventHandler = QuestieLoader:ImportModule("QuestieEventHandler")
 ---@type QuestieQuest
@@ -132,7 +130,6 @@ function Questie:RefreshConfig(_, db, profileName)
     QuestieQuest:SmoothReset()
     TrackerBaseFrame:OnProfileChange()
     QuestieCustomConfig:Refresh()
-    QuestieConfigNext:Refresh()
     Questie:Debug(Questie.DEBUG_DEVELOP, "Switched Ace Profile!")
 end
 
