@@ -129,6 +129,19 @@ local function _GetLFGProfileColor(key, defaultRed, defaultGreen, defaultBlue, d
         tonumber(color and color[4]) or defaultAlpha
 end
 
+local function _GetLFGDisplayTitle(snapshot)
+    local dungeonName = _StripLFGMirrorFormatting(snapshot and snapshot.title)
+    if dungeonName == "" then
+        return l10n("Dungeon Objectives")
+    end
+
+    if string.find(string.lower(dungeonName), "dungeon", 1, true) then
+        return dungeonName
+    end
+
+    return "Dungeon: " .. dungeonName
+end
+
 local function _FormatLFGObjectiveRow(row)
     local text = _StripLFGMirrorFormatting(row and row.plainText)
     local lowerText = string.lower(text)
@@ -304,10 +317,7 @@ local function _RefreshRenderedLFGSnapshot(snapshot)
         end
     end
 
-    local displayTitle = _StripLFGMirrorFormatting(snapshot.title)
-    if displayTitle == "" then
-        displayTitle = l10n("Dungeon Objectives")
-    end
+    local displayTitle = _GetLFGDisplayTitle(snapshot)
 
     local red, green, blue = _GetLFGProfileColor("trackerHeaderTextColor", 1, 0.82, 0, 1)
     if isCollapsed then
@@ -1374,10 +1384,7 @@ function QuestieTracker:Update(forceUpdate)
         end
 
         local zoneTopInset = hasPreviousLine and zoneSpacing or 0
-        local displayTitle = _StripLFGMirrorFormatting(lfgSnapshot.title)
-        if displayTitle == "" then
-            displayTitle = l10n("Dungeon Objectives")
-        end
+        local displayTitle = _GetLFGDisplayTitle(lfgSnapshot)
 
         line:SetMode("zone")
         line:SetOnClick("zone")
