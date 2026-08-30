@@ -48,6 +48,9 @@ local linePool = {}
 local buttonPool = {}
 local lineMarginLeft = 10
 local ToggleCollapsedZoneHeader
+local alternatingRowPaintedIndex = 0
+local alternatingRowFallbackOdd = { 0.018, 0.022, 0.031, 0.32 }
+local alternatingRowFallbackEven = { 0.082, 0.855, 0.804, 0.08 }
 
 local function ApplyTrackerLabelWrap(fontString)
     if not fontString then
@@ -92,6 +95,11 @@ function TrackerLinePool.Initialize(questFrame)
             return ok
         end
         line.label:Hide()
+
+        line.alternatingRowBackground = line:CreateTexture(nil, "BACKGROUND")
+        line.alternatingRowBackground:SetTexture("Interface\\Buttons\\WHITE8X8")
+        line.alternatingRowBackground:SetAllPoints(line)
+        line.alternatingRowBackground:Hide()
 
         line.separator = line:CreateTexture(nil, "BACKGROUND")
         line.separator:SetTexture("Interface\\Buttons\\WHITE8X8")
@@ -719,6 +727,9 @@ function TrackerLinePool.ResetLinesForChange()
         if line.separator then
             line.separator:Hide()
         end
+        if line.alternatingRowBackground then
+            line.alternatingRowBackground:Hide()
+        end
         if line.lfgSectionBackground then
             line.lfgSectionBackground:Hide()
         end
@@ -728,6 +739,7 @@ function TrackerLinePool.ResetLinesForChange()
     end
 
     lineIndex = 0
+    alternatingRowPaintedIndex = 0
 end
 
 function TrackerLinePool.ResetButtonsForChange()
@@ -797,6 +809,74 @@ function TrackerLinePool.UpdateWrappedLineWidths(trackerLineWidth)
             line:SetHeight(line.label:GetHeight() + bottomPadding)
         end
     end
+end
+
+local function GetAlternatingRowColor(setting, fallback)
+    local profile = Questie.db and Questie.db.profile
+    local color = profile and profile[setting]
+    if type(color) ~= "table" then
+        color = fallback
+    end
+
+    return tonumber(color[1]) or fallback[1],
+        tonumber(color[2]) or fallback[2],
+        tonumber(color[3]) or fallback[3],
+        tonumber(color[4]) or fallback[4]
+end
+
+function TrackerLinePool.UpdateAlternatingRowBackgrounds()
+    local profile = Questie.db and Questie.db.profile
+    local enabled = profile and profile.trackerAlternatingRowsEnabled == true
+    local highestIndex = lineIndex > linePoolSize and linePoolSize or lineIndex
+    local visibleIndex = 0
+    local oddR, oddG, oddB, oddA = GetAlternatingRowColor("trackerAlternatingRowColorOdd", alternatingRowFallbackOdd)
+    local evenR, evenG, evenB, evenA = GetAlternatingRowColor("trackerAlternatingRowColorEven", alternatingRowFallbackEven)
+
+    if not enabled then
+        for i = 1, alternatingRowPaintedIndex do
+            local line = linePool[i]
+            if line and line.alternatingRowBackground then
+                line.alternatingRowBackground:Hide()
+            end
+        end
+        alternatingRowPaintedIndex = 0
+        return
+    end
+
+    for i = 1, highestIndex do
+        local line = linePool[i]
+        local background = line and line.alternatingRowBackground
+        if background then
+            if line.mode and line:IsShown() then
+                visibleIndex = visibleIndex + 1
+                if visibleIndex % 2 == 1 then
+                    background:SetVertexColor(oddR, oddG, oddB, oddA)
+                    if oddA > 0 then
+                        background:Show()
+                    else
+                        background:Hide()
+                    end
+                else
+                    background:SetVertexColor(evenR, evenG, evenB, evenA)
+                    if evenA > 0 then
+                        background:Show()
+                    else
+                        background:Hide()
+                    end
+                end
+            else
+                background:Hide()
+            end
+        end
+    end
+
+    for i = highestIndex + 1, alternatingRowPaintedIndex do
+        local line = linePool[i]
+        if line and line.alternatingRowBackground then
+            line.alternatingRowBackground:Hide()
+        end
+    end
+    alternatingRowPaintedIndex = highestIndex
 end
 
 ---@return table|nil lineIndex linePool[lineIndex + 1]
@@ -896,6 +976,9 @@ function TrackerLinePool.HideUnusedLines()
             line.playButton.mode = nil
             if line.separator then
                 line.separator:Hide()
+            end
+            if line.alternatingRowBackground then
+                line.alternatingRowBackground:Hide()
             end
             if line.lfgSectionBackground then
                 line.lfgSectionBackground:Hide()

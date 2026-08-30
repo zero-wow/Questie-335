@@ -2475,6 +2475,7 @@ function QuestieTracker:UpdateFormatting()
     end
 
     TrackerBaseFrame:Update()
+    TrackerLinePool.UpdateAlternatingRowBackgrounds()
 
     local trackerFontSizeZone = TrackerFonts:GetZoneFontSize()
     local trackerTopSpacing = math.max(0, tonumber(Questie.db.profile.trackerTopSpacing) or 0)

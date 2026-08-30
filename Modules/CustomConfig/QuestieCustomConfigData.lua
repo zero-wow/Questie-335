@@ -46,6 +46,8 @@ QuestieCustomConfigData.colorways = {
             navIdleText = {0.804, 0.831, 0.882, 1.00},
             navActiveText = {1.000, 0.925, 0.529, 1.00},
             closeHover = {0.929, 0.451, 0.302, 1.00},
+            trackerRowOdd = {0.018, 0.022, 0.031, 0.32},
+            trackerRowEven = {0.082, 0.855, 0.804, 0.08},
         },
     },
     emerald = {
@@ -76,6 +78,8 @@ QuestieCustomConfigData.colorways = {
             navIdleText = {0.733, 0.855, 0.812, 1.00},
             navActiveText = {0.925, 0.969, 0.906, 1.00},
             closeHover = {0.953, 0.561, 0.435, 1.00},
+            trackerRowOdd = {0.014, 0.020, 0.026, 0.32},
+            trackerRowEven = {0.165, 0.902, 0.612, 0.08},
         },
     },
     tangerine = {
@@ -106,6 +110,8 @@ QuestieCustomConfigData.colorways = {
             navIdleText = {0.925, 0.804, 0.690, 1.00},
             navActiveText = {1.000, 0.922, 0.812, 1.00},
             closeHover = {1.000, 0.714, 0.400, 1.00},
+            trackerRowOdd = {0.020, 0.016, 0.018, 0.32},
+            trackerRowEven = {0.949, 0.486, 0.224, 0.09},
         },
     },
     peach = {
@@ -136,6 +142,8 @@ QuestieCustomConfigData.colorways = {
             navIdleText = {0.906, 0.847, 0.827, 1.00},
             navActiveText = {1.000, 0.949, 0.906, 1.00},
             closeHover = {0.976, 0.749, 0.600, 1.00},
+            trackerRowOdd = {0.018, 0.019, 0.025, 0.32},
+            trackerRowEven = {0.973, 0.620, 0.537, 0.09},
         },
     },
 }
@@ -147,7 +155,7 @@ QuestieCustomConfigData.tabs = {
         key = "colorways_tab",
         alias = "colorways",
         title = "Colorways",
-        subtitle = "Preset icon styles and command-center skin themes",
+        subtitle = "Objective icons, interface themes, and coordinated tracker rows",
     },
     {
         key = "tracker_tab",

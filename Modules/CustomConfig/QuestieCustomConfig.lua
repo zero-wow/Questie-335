@@ -12,6 +12,8 @@ local QuestieLib = QuestieLoader:ImportModule("QuestieLib")
 local QuestieOptions = QuestieLoader:ImportModule("QuestieOptions")
 ---@type QuestieOptionsUtils
 local QuestieOptionsUtils = QuestieLoader:ImportModule("QuestieOptionsUtils")
+---@type TrackerLinePool
+local TrackerLinePool = QuestieLoader:ImportModule("TrackerLinePool")
 
 local C_Timer = QuestieCompat.C_Timer
 
@@ -224,7 +226,27 @@ local function _GetActiveColorwayKey()
     return colorwayKey
 end
 
-local function _ApplyColorway(colorwayKey)
+local function _ApplyTrackerRowPalette(preset)
+    local profile = Questie.db and Questie.db.profile
+    local presetPalette = preset and preset.palette
+    if not profile or not presetPalette then
+        return
+    end
+
+    local odd = presetPalette.trackerRowOdd
+    local even = presetPalette.trackerRowEven
+    if type(odd) == "table" then
+        profile.trackerAlternatingRowColorOdd = {odd[1], odd[2], odd[3], odd[4]}
+    end
+    if type(even) == "table" then
+        profile.trackerAlternatingRowColorEven = {even[1], even[2], even[3], even[4]}
+    end
+
+    profile.trackerAlternatingRowPaletteVersion = 1
+    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+end
+
+local function _ApplyColorway(colorwayKey, applyTrackerRows)
     local resolvedKey = colorwayKey or _GetActiveColorwayKey()
     local preset = QuestieCustomConfigData.colorways[resolvedKey]
         or QuestieCustomConfigData.colorways[QuestieCustomConfigData.defaultColorway]
@@ -235,6 +257,12 @@ local function _ApplyColorway(colorwayKey)
 
     _GetState().colorway = resolvedKey
     _CopyPalette(preset.palette)
+
+    local profile = Questie.db and Questie.db.profile
+    local needsTrackerRowMigration = profile and (tonumber(profile.trackerAlternatingRowPaletteVersion) or 0) < 1
+    if applyTrackerRows == true or needsTrackerRowMigration then
+        _ApplyTrackerRowPalette(preset)
+    end
 
     if _QuestieCustomConfig.frame then
         _RefreshChromeTheme()
@@ -2135,7 +2163,7 @@ local function _RenderColorwaysPage(host)
     intro:SetPoint("TOPLEFT", page, "TOPLEFT", 12, -8)
     intro:SetPoint("TOPRIGHT", page, "TOPRIGHT", -12, -8)
     intro:SetJustifyH("LEFT")
-    intro:SetText("Choose an icon preset or a Command Center colorway. Changes apply immediately.")
+    intro:SetText("Choose an icon preset or interface colorway. Changes apply immediately.")
     intro:SetTextColor(unpack(palette.textSoft))
 
     local iconCardHeight = 52
@@ -2214,7 +2242,7 @@ local function _RenderColorwaysPage(host)
     local cardHeight = 54
     local cardGap = 5
     local firstRowTop = -8
-    local shellSection = _CreateNativeSection(page, iconSection, "Command Center Colorways", "These recolor only the experimental /qc shell. Tracker colors and Questie world-map colors remain separate.", 1)
+    local shellSection = _CreateNativeSection(page, iconSection, "Interface Colorways", "Recolors the /qc shell and supplies matching alternating tracker-row colors. Applying one never enables row backgrounds or changes map colors.", 1)
 
     local previousShellCard
 
@@ -2226,7 +2254,7 @@ local function _RenderColorwaysPage(host)
         local card = _CreatePresetCard(shellSection, 1, cardHeight, colorwayData.name, colorwayData.subtitle, colorwayData.preview, function()
             return _GetActiveColorwayKey() == presetKey
         end, function()
-            _ApplyColorway(presetKey)
+            _ApplyColorway(presetKey, true)
             _RenderCurrentTab("colorways_tab")
         end)
         presetCards[#presetCards + 1] = card
@@ -2246,7 +2274,7 @@ local function _RenderColorwaysPage(host)
     statusText:SetPoint("TOPLEFT", statusSection.description, "BOTTOMLEFT", 0, -8)
     statusText:SetPoint("TOPRIGHT", statusSection.description, "BOTTOMRIGHT", 0, -8)
     statusText:SetJustifyH("LEFT")
-    statusText:SetText(string.format("Icon preset: %s\nCommand-center colorway: %s", tostring(activeIconTheme), tostring((QuestieCustomConfigData.colorways[activeColorway] and QuestieCustomConfigData.colorways[activeColorway].name) or activeColorway)))
+    statusText:SetText(string.format("Icon preset: %s\nInterface colorway: %s", tostring(activeIconTheme), tostring((QuestieCustomConfigData.colorways[activeColorway] and QuestieCustomConfigData.colorways[activeColorway].name) or activeColorway)))
     statusText:SetTextColor(unpack(palette.navIdleText))
 
     page.Reflow = function()
@@ -2313,7 +2341,7 @@ local function _RenderColorwaysPage(host)
         local iconTheme = Questie.db.profile.iconTheme or "custom"
         local colorway = _GetActiveColorwayKey()
         statusText:SetText(string.format(
-            "Icon preset: %s\nCommand-center colorway: %s",
+            "Icon preset: %s\nInterface colorway: %s",
             tostring(iconTheme),
             tostring((QuestieCustomConfigData.colorways[colorway] and QuestieCustomConfigData.colorways[colorway].name) or colorway)
         ))

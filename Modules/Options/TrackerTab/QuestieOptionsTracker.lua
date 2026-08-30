@@ -1346,6 +1346,57 @@ function QuestieOptions.tabs.tracker:Initialize()
                                     QuestieTracker:Update()
                                 end
                             },
+                            trackerAlternatingRowsEnabled = {
+                                type = "toggle",
+                                order = 8,
+                                width = 3,
+                                name = function() return l10n("Alternating Row Backgrounds") end,
+                                desc = function() return l10n("Shows alternating background colors behind visible tracker rows. Wrapped text remains inside a single row, and colorways never enable this option automatically.") end,
+                                disabled = function() return not Questie.db.profile.trackerEnabled end,
+                                get = function()
+                                    return Questie.db.profile.trackerAlternatingRowsEnabled
+                                end,
+                                set = function(_, value)
+                                    Questie.db.profile.trackerAlternatingRowsEnabled = value
+                                    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+                                end,
+                            },
+                            trackerAlternatingRowColorOdd = {
+                                type = "color",
+                                order = 9,
+                                hasAlpha = true,
+                                name = function() return l10n("Odd Row Background") end,
+                                desc = function() return l10n("Sets the background color and alpha for the first, third, and following odd tracker rows.") end,
+                                disabled = function()
+                                    return not Questie.db.profile.trackerEnabled or not Questie.db.profile.trackerAlternatingRowsEnabled
+                                end,
+                                get = function()
+                                    return _GetColorValue("trackerAlternatingRowColorOdd", 0.018, 0.022, 0.031, 0.32)
+                                end,
+                                set = function(_, r, g, b, a)
+                                    _SetColorValue("trackerAlternatingRowColorOdd", r, g, b, a)
+                                    Questie.db.profile.trackerAlternatingRowPaletteVersion = 1
+                                    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+                                end,
+                            },
+                            trackerAlternatingRowColorEven = {
+                                type = "color",
+                                order = 10,
+                                hasAlpha = true,
+                                name = function() return l10n("Even Row Background") end,
+                                desc = function() return l10n("Sets the background color and alpha for the second, fourth, and following even tracker rows.") end,
+                                disabled = function()
+                                    return not Questie.db.profile.trackerEnabled or not Questie.db.profile.trackerAlternatingRowsEnabled
+                                end,
+                                get = function()
+                                    return _GetColorValue("trackerAlternatingRowColorEven", 0.082, 0.855, 0.804, 0.08)
+                                end,
+                                set = function(_, r, g, b, a)
+                                    _SetColorValue("trackerAlternatingRowColorEven", r, g, b, a)
+                                    Questie.db.profile.trackerAlternatingRowPaletteVersion = 1
+                                    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+                                end,
+                            },
                         },
                     },
                     group_diagnostics = {
