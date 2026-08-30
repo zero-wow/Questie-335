@@ -98,6 +98,7 @@ local _RequestLFGObjectiveMirrorRefresh
 local AUTO_QUEST_NOTICE_RETRY_DELAY = 0.25
 local AUTO_QUEST_NOTICE_MAX_RETRIES = 4
 local AUTO_QUEST_NOTICE_ANIMATION_TIME = 0.24
+local AUTO_QUEST_DISCOVERY_DELAYS = {0, 0.05, 0.15, 0.35, 0.75, 1.5, 3}
 local autoQuestOffers = {}
 local autoQuestOfferOrder = {}
 local autoQuestRenderedLines = {}
@@ -110,6 +111,7 @@ local autoQuestGlobalHookInstalled = false
 local autoQuestRemoveHookInstalled = false
 local autoQuestDialogueHookInstalled = false
 local autoQuestDialogueHookRetries = 0
+local autoQuestDiscoveryGeneration = 0
 local autoQuestWatchFrameUpdateHookInstalled = false
 local autoQuestOpeningQuestId
 local autoQuestAcceptButtonCounter = 0
@@ -1053,9 +1055,39 @@ local function _EnumerateFrames(callback)
     end
 end
 
-local function _ScanVisibleAutoQuestOffers()
+local function _ScanPendingNativeAutoQuestOffers()
+    if type(GetAutoQuestPopUp) ~= "function" then
+        return
+    end
+
+    local popupCount
+    if type(GetNumAutoQuestPopUps) == "function" then
+        local ok, value = pcall(GetNumAutoQuestPopUps)
+        popupCount = ok and tonumber(value) or nil
+    end
+
+    -- Ascension exposes GetAutoQuestPopUp even on builds where the count helper
+    -- is absent. A small bounded scan recovers offers that survived /reload.
+    local scanLimit = math.max(0, math.min(50, popupCount or 20))
+    for popupIndex = 1, scanLimit do
+        local ok, questId, popupType = pcall(GetAutoQuestPopUp, popupIndex)
+        questId = ok and tonumber(questId) or nil
+        if questId then
+            _CaptureAutoQuestOffer(questId, popupType, nil)
+        end
+    end
+end
+
+local function _ScanVisibleAutoQuestOffers(scanPendingQueue)
+    if scanPendingQueue then
+        _ScanPendingNativeAutoQuestOffers()
+    end
+
     _EnumerateFrames(function(frame)
-        if frame.IsShown and frame:IsShown() and _IsExplicitAutoQuestOfferFrame(frame) then
+        local _, _, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(frame)
+        local isShown = not frame.IsShown or frame:IsShown()
+        local isActive = frame.isActive == true
+        if _IsExplicitAutoQuestOfferFrame(frame) and (isShown or isActive or watchPopupIndex) then
             local questId = _GetFrameQuestId(frame)
             if questId then
                 if _EnsureAutoQuestNativeHook then
@@ -1182,18 +1214,13 @@ _EnsureAutoQuestNativeHook = function(frame)
     frame.__Questie335AutoQuestHooked = true
     local isOfferFrame = _IsExplicitAutoQuestOfferFrame(frame)
     local function RefreshAfterNativeChange(self)
-        if isOfferFrame and autoQuestSuppressedFrameSet[self]
+        if isOfferFrame
             and not autoQuestNativeSuppressionSuspended
             and Questie.db.profile.trackerAutoQuestHideNative
             and _HasVisibleAutoQuestReplacement()
             and not InCombatLockdown()
         then
-            if self.SetAlpha then
-                self:SetAlpha(0)
-            end
-            if self.Hide and (not self.IsShown or self:IsShown()) then
-                self:Hide()
-            end
+            _SuppressAutoQuestFrame(self)
         end
         if _HasReadyAutoQuestOffers() then
             autoQuestSuppressionScanNeeded = true
@@ -1290,6 +1317,20 @@ local function _RetryDialogueUIAutoQuestHook()
     end
 end
 
+local function _ScheduleAutoQuestOfferDiscovery()
+    autoQuestDiscoveryGeneration = autoQuestDiscoveryGeneration + 1
+    local generation = autoQuestDiscoveryGeneration
+
+    for _, delay in ipairs(AUTO_QUEST_DISCOVERY_DELAYS) do
+        C_Timer.After(delay, function()
+            if generation ~= autoQuestDiscoveryGeneration then
+                return
+            end
+            _ScanVisibleAutoQuestOffers(true)
+        end)
+    end
+end
+
 local function _SweepAcceptedAutoQuestOffers()
     local changed = false
     for index = #autoQuestOfferOrder, 1, -1 do
@@ -1374,10 +1415,7 @@ local function _InitializeAutoQuestNoticeHooks()
             elseif event == "QUEST_ACCEPTED" or event == "QUEST_LOG_UPDATE" then
                 C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
             elseif event == "PLAYER_ENTERING_WORLD" then
-                C_Timer.After(0.5, function()
-                    _InstallDialogueUIAutoQuestHook()
-                    _ScanVisibleAutoQuestOffers()
-                end)
+                _ScheduleAutoQuestOfferDiscovery()
             elseif event == "PLAYER_REGEN_DISABLED" then
                 _ClearAutoQuestSpaceBinding()
             elseif event == "PLAYER_REGEN_ENABLED" then
@@ -1389,12 +1427,9 @@ local function _InitializeAutoQuestNoticeHooks()
         end)
     end
 
-    -- Questie initializes after PLAYER_ENTERING_WORLD on this client, so also
-    -- capture offers that were created before our hooks became available.
-    C_Timer.After(0, function()
-        _InstallDialogueUIAutoQuestHook()
-        _ScanVisibleAutoQuestOffers()
-    end)
+    -- Questie can initialize before WatchFrame recreates a pending popup after
+    -- /reload. These bounded scans bridge that startup window without polling.
+    _ScheduleAutoQuestOfferDiscovery()
 end
 
 local function _SetTextureColor(texture, color, fallback)
@@ -1901,7 +1936,7 @@ function QuestieTracker:SetAutoQuestNoticesEnabled(enabled)
         _RestoreNativeAutoQuestDefaults()
     else
         autoQuestNativeSuppressionSuspended = false
-        _ScanVisibleAutoQuestOffers()
+        _ScanVisibleAutoQuestOffers(true)
     end
     _RequestAutoQuestNoticeRefresh()
 end
