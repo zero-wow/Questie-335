@@ -49,6 +49,7 @@ local buttonPool = {}
 local lineMarginLeft = 10
 local ToggleCollapsedZoneHeader
 local alternatingRowPaintedIndex = 0
+local alternatingBackgroundFrameInset = 1
 local alternatingRowFallbackOdd = { 0.018, 0.022, 0.031, 0.32 }
 local alternatingRowFallbackEven = { 0.082, 0.855, 0.804, 0.08 }
 
@@ -855,12 +856,37 @@ local function GetQuestBlockKey(line)
     return questId
 end
 
-local function AnchorAlternatingBackgroundToLine(background, line)
-    background:ClearAllPoints()
-    background:SetAllPoints(line)
+local function GetAlternatingBackgroundHorizontalOffsets(line, fullWidth)
+    if not fullWidth then
+        return 0, 0
+    end
+
+    local baseFrame = TrackerBaseFrame.baseFrame
+    local baseLeft = baseFrame and baseFrame:GetLeft()
+    local baseRight = baseFrame and baseFrame:GetRight()
+    local lineLeft = line and line:GetLeft()
+    local lineRight = line and line:GetRight()
+    if baseLeft and baseRight and lineLeft and lineRight then
+        local leftExtension = math.max(0, lineLeft - baseLeft - alternatingBackgroundFrameInset)
+        local rightExtension = math.max(0, baseRight - lineRight - alternatingBackgroundFrameInset)
+        return -leftExtension, rightExtension
+    end
+
+    local baseWidth = tonumber(baseFrame and baseFrame:GetWidth()) or 0
+    local lineWidth = tonumber(line and line:GetWidth()) or 0
+    local leftExtension = math.max(0, lineMarginLeft - alternatingBackgroundFrameInset)
+    local rightExtension = math.max(0, baseWidth - lineMarginLeft - lineWidth - alternatingBackgroundFrameInset)
+    return -leftExtension, rightExtension
 end
 
-local function AnchorAlternatingBackgroundToQuestBlock(background, firstIndex, lastIndex, edgePadding)
+local function AnchorAlternatingBackgroundToLine(background, line, fullWidth)
+    local leftOffset, rightOffset = GetAlternatingBackgroundHorizontalOffsets(line, fullWidth)
+    background:ClearAllPoints()
+    background:SetPoint("TOPLEFT", line, "TOPLEFT", leftOffset, 0)
+    background:SetPoint("BOTTOMRIGHT", line, "BOTTOMRIGHT", rightOffset, 0)
+end
+
+local function AnchorAlternatingBackgroundToQuestBlock(background, firstIndex, lastIndex, edgePadding, fullWidth)
     local firstLine = linePool[firstIndex]
     local lastLine = linePool[lastIndex]
     local previousLine = linePool[firstIndex - 1]
@@ -868,10 +894,11 @@ local function AnchorAlternatingBackgroundToQuestBlock(background, firstIndex, l
     local availableBottom = math.max(0, tonumber(lastLine.contentBottomPadding) or 0)
     local topPadding = math.min(edgePadding, availableTop)
     local bottomPadding = math.min(edgePadding, availableBottom)
+    local leftOffset, rightOffset = GetAlternatingBackgroundHorizontalOffsets(firstLine, fullWidth)
 
     background:ClearAllPoints()
-    background:SetPoint("TOPLEFT", firstLine, "TOPLEFT", 0, topPadding)
-    background:SetPoint("BOTTOMRIGHT", lastLine, "BOTTOMRIGHT", 0, availableBottom - bottomPadding)
+    background:SetPoint("TOPLEFT", firstLine, "TOPLEFT", leftOffset, topPadding)
+    background:SetPoint("BOTTOMRIGHT", lastLine, "BOTTOMRIGHT", rightOffset, availableBottom - bottomPadding)
 end
 
 function TrackerLinePool.UpdateAlternatingRowBackgrounds()
@@ -879,6 +906,7 @@ function TrackerLinePool.UpdateAlternatingRowBackgrounds()
     local enabled = profile and profile.trackerAlternatingRowsEnabled == true
     local mode = profile and profile.trackerAlternatingRowMode == "rows" and "rows" or "questBlocks"
     local edgePadding = math.max(0, math.min(8, tonumber(profile and profile.trackerAlternatingBlockEdgePadding) or 2))
+    local fullWidth = profile and profile.trackerAlternatingFullWidth == true
     local highestIndex = lineIndex > linePoolSize and linePoolSize or lineIndex
     local oddR, oddG, oddB, oddA = GetAlternatingRowColor("trackerAlternatingRowColorOdd", alternatingRowFallbackOdd)
     local evenR, evenG, evenB, evenA = GetAlternatingRowColor("trackerAlternatingRowColorEven", alternatingRowFallbackEven)
@@ -913,7 +941,7 @@ function TrackerLinePool.UpdateAlternatingRowBackgrounds()
 
                 blockIndex = blockIndex + 1
                 local background = line.alternatingRowBackground
-                AnchorAlternatingBackgroundToQuestBlock(background, i, lastIndex, edgePadding)
+                AnchorAlternatingBackgroundToQuestBlock(background, i, lastIndex, edgePadding, fullWidth)
                 SetAlternatingBackgroundColor(background, blockIndex, oddR, oddG, oddB, oddA, evenR, evenG, evenB, evenA)
 
                 for childIndex = i + 1, lastIndex do
@@ -936,7 +964,7 @@ function TrackerLinePool.UpdateAlternatingRowBackgrounds()
             local line = linePool[i]
             local background = line and line.alternatingRowBackground
             if background then
-                AnchorAlternatingBackgroundToLine(background, line)
+                AnchorAlternatingBackgroundToLine(background, line, fullWidth)
                 if line.mode and line:IsShown() then
                     visibleIndex = visibleIndex + 1
                     SetAlternatingBackgroundColor(background, visibleIndex, oddR, oddG, oddB, oddA, evenR, evenG, evenB, evenA)

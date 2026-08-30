@@ -1625,6 +1625,30 @@ local trackerOptionsLocales = {
         ["esES"] = true,
         ["frFR"] = true,
     },
+    ["Full-Width Alternating Backgrounds"] = {
+        ["ptBR"] = true,
+        ["ruRU"] = true,
+        ["deDE"] = true,
+        ["koKR"] = true,
+        ["esMX"] = true,
+        ["enUS"] = true,
+        ["zhCN"] = true,
+        ["zhTW"] = true,
+        ["esES"] = true,
+        ["frFR"] = true,
+    },
+    ["Extends alternating row or quest-block backgrounds to the inner edges of the tracker frame without changing text indentation or external quest-item buttons."] = {
+        ["ptBR"] = true,
+        ["ruRU"] = true,
+        ["deDE"] = true,
+        ["koKR"] = true,
+        ["esMX"] = true,
+        ["enUS"] = true,
+        ["zhCN"] = true,
+        ["zhTW"] = true,
+        ["esES"] = true,
+        ["frFR"] = true,
+    },
 }
 
 for k, v in pairs(trackerOptionsLocales) do

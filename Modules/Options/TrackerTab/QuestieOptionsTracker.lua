@@ -1404,9 +1404,24 @@ function QuestieOptions.tabs.tracker:Initialize()
                                     TrackerLinePool.UpdateAlternatingRowBackgrounds()
                                 end,
                             },
+                            trackerAlternatingFullWidth = {
+                                type = "toggle",
+                                order = 11,
+                                width = 3,
+                                name = function() return l10n("Full-Width Alternating Backgrounds") end,
+                                desc = function() return l10n("Extends alternating row or quest-block backgrounds to the inner edges of the tracker frame without changing text indentation or external quest-item buttons.") end,
+                                disabled = function() return not Questie.db.profile.trackerEnabled or not Questie.db.profile.trackerAlternatingRowsEnabled end,
+                                get = function()
+                                    return Questie.db.profile.trackerAlternatingFullWidth
+                                end,
+                                set = function(_, value)
+                                    Questie.db.profile.trackerAlternatingFullWidth = value
+                                    TrackerLinePool.UpdateAlternatingRowBackgrounds()
+                                end,
+                            },
                             trackerAlternatingRowColorOdd = {
                                 type = "color",
-                                order = 11,
+                                order = 12,
                                 hasAlpha = true,
                                 name = function() return l10n("Odd Alternating Background") end,
                                 desc = function() return l10n("Sets the color and alpha for the first, third, and following alternating rows or quest blocks.") end,
@@ -1424,7 +1439,7 @@ function QuestieOptions.tabs.tracker:Initialize()
                             },
                             trackerAlternatingRowColorEven = {
                                 type = "color",
-                                order = 12,
+                                order = 13,
                                 hasAlpha = true,
                                 name = function() return l10n("Even Alternating Background") end,
                                 desc = function() return l10n("Sets the color and alpha for the second, fourth, and following alternating rows or quest blocks.") end,

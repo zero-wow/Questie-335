@@ -128,6 +128,7 @@ function QuestieOptionsDefaults:Load()
             trackerAlternatingRowsEnabled = true,
             trackerAlternatingRowMode = "questBlocks",
             trackerAlternatingBlockEdgePadding = 2,
+            trackerAlternatingFullWidth = false,
             trackerAlternatingRowColorOdd = { 0.018, 0.022, 0.031, 0.32 },
             trackerAlternatingRowColorEven = { 0.082, 0.855, 0.804, 0.08 },
             trackerAlternatingRowPaletteVersion = 0,
