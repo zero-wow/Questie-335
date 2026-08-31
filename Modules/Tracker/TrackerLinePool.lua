@@ -897,16 +897,17 @@ local function GetAlternatingBackgroundHorizontalOffsets(line, fullWidth)
     local lineLeft = line and line:GetLeft()
     local lineRight = line and line:GetRight()
     if baseLeft and baseRight and lineLeft and lineRight then
-        local leftExtension = math.max(0, lineLeft - baseLeft - alternatingBackgroundFrameInset)
-        local rightExtension = math.max(0, baseRight - lineRight - alternatingBackgroundFrameInset)
-        return -leftExtension, rightExtension
+        return (baseLeft + alternatingBackgroundFrameInset) - lineLeft,
+            (baseRight - alternatingBackgroundFrameInset) - lineRight
     end
 
     local baseWidth = tonumber(baseFrame and baseFrame:GetWidth()) or 0
+    if baseWidth <= 0 then
+        return 0, 0
+    end
     local lineWidth = tonumber(line and line:GetWidth()) or 0
-    local leftExtension = math.max(0, lineMarginLeft - alternatingBackgroundFrameInset)
-    local rightExtension = math.max(0, baseWidth - lineMarginLeft - lineWidth - alternatingBackgroundFrameInset)
-    return -leftExtension, rightExtension
+    return alternatingBackgroundFrameInset - lineMarginLeft,
+        baseWidth - alternatingBackgroundFrameInset - lineMarginLeft - lineWidth
 end
 
 local function AnchorAlternatingBackgroundToLine(background, line, fullWidth)
@@ -924,7 +925,9 @@ local function AnchorAlternatingBackgroundToQuestBlock(background, firstIndex, l
     local availableBottom = math.max(0, tonumber(lastLine.contentBottomPadding) or 0)
     local topPadding = math.min(edgePadding, availableTop)
     local bottomPadding = math.min(edgePadding, availableBottom)
-    local leftOffset, rightOffset = GetAlternatingBackgroundHorizontalOffsets(firstLine, fullWidth)
+    -- The two texture points use different rows, so each edge needs that row's correction.
+    local leftOffset = GetAlternatingBackgroundHorizontalOffsets(firstLine, fullWidth)
+    local _, rightOffset = GetAlternatingBackgroundHorizontalOffsets(lastLine, fullWidth)
 
     background:ClearAllPoints()
     background:SetPoint("TOPLEFT", firstLine, "TOPLEFT", leftOffset, topPadding)
