@@ -20,13 +20,17 @@ local max = math.max
 local min = math.min
 
 local WINDOW_NAME = "QuestieConfigNextFrame"
-local DEFAULT_WIDTH = 860
-local DEFAULT_HEIGHT = 620
-local MIN_WIDTH = 720
-local MIN_HEIGHT = 500
-local NAV_WIDTH = 136
-local OUTER_GUTTER = 12
-local CARD_GUTTER = 12
+local WINDOW_LAYOUT_VERSION = 2
+local DEFAULT_WIDTH = 680
+local DEFAULT_HEIGHT = 450
+local MIN_WIDTH = 600
+local MIN_HEIGHT = 390
+local OUTER_GUTTER = 8
+local CARD_GUTTER = 4
+local CARD_HEADER_HEIGHT = 30
+local CARD_GAP = 6
+local CONTROL_COLUMN_GAP = 8
+local CONTROL_ROW_GAP = 1
 
 local private = {
     built = false,
@@ -201,23 +205,42 @@ local function _SaveGeometry()
     end
     state.window.width = floor(frame:GetWidth() + 0.5)
     state.window.height = floor(frame:GetHeight() + 0.5)
+    state.window.layoutVersion = WINDOW_LAYOUT_VERSION
 end
 
 local function _RestoreGeometry(frame)
     local state = _CharacterState()
     local saved = state and state.window or {}
-    local maxWidth = max(560, UIParent:GetWidth() - 30)
-    local maxHeight = max(420, UIParent:GetHeight() - 30)
+    local maxWidth = max(520, UIParent:GetWidth() - 16)
+    local maxHeight = max(350, UIParent:GetHeight() - 16)
     local minWidth = min(MIN_WIDTH, maxWidth)
     local minHeight = min(MIN_HEIGHT, maxHeight)
-    local width = _Clamp(tonumber(saved.width) or DEFAULT_WIDTH, minWidth, maxWidth)
-    local height = _Clamp(tonumber(saved.height) or DEFAULT_HEIGHT, minHeight, maxHeight)
+    local requestedWidth = tonumber(saved.width) or DEFAULT_WIDTH
+    local requestedHeight = tonumber(saved.height) or DEFAULT_HEIGHT
+
+    -- Shrink the oversized prototype once without discarding a smaller custom size.
+    if saved.layoutVersion ~= WINDOW_LAYOUT_VERSION then
+        requestedWidth = min(requestedWidth, DEFAULT_WIDTH)
+        requestedHeight = min(requestedHeight, DEFAULT_HEIGHT)
+        saved.layoutVersion = WINDOW_LAYOUT_VERSION
+    end
+
+    local width = _Clamp(requestedWidth, minWidth, maxWidth)
+    local height = _Clamp(requestedHeight, minHeight, maxHeight)
 
     frame:SetMinResize(minWidth, minHeight)
     frame:SetMaxResize(maxWidth, maxHeight)
     frame:SetSize(width, height)
     frame:ClearAllPoints()
-    frame:SetPoint("CENTER", UIParent, "CENTER", tonumber(saved.x) or 0, tonumber(saved.y) or 0)
+    local maxX = max(0, (UIParent:GetWidth() - width) / 2)
+    local maxY = max(0, (UIParent:GetHeight() - height) / 2)
+    local x = _Clamp(tonumber(saved.x) or 0, -maxX, maxX)
+    local y = _Clamp(tonumber(saved.y) or 0, -maxY, maxY)
+    frame:SetPoint("CENTER", UIParent, "CENTER", x, y)
+    saved.width = floor(width + 0.5)
+    saved.height = floor(height + 0.5)
+    saved.x = x
+    saved.y = y
 end
 
 local function _RefreshStatus()
@@ -225,8 +248,7 @@ local function _RefreshStatus()
         return
     end
     local profileName = Questie.db.GetCurrentProfile and Questie.db:GetCurrentProfile() or "Default"
-    private.frame.footerLeft:SetText("PROFILE  " .. tostring(profileName))
-    private.frame.footerRight:SetText("v" .. tostring(QuestieLib:GetAddonVersionString()) .. "  |  NATIVE / CACHED")
+    private.frame.meta:SetText(tostring(profileName) .. "  |  v" .. tostring(QuestieLib:GetAddonVersionString()))
 end
 
 local function _ApplyShellTheme()
@@ -236,41 +258,30 @@ local function _ApplyShellTheme()
     end
     local theme = _Theme()
     Widgets:SetTheme(theme)
-    Widgets:ApplyBackdrop(frame, theme.windowBg, theme.border, 1)
+    Widgets:ApplyBackdrop(frame, theme.windowBg, theme.borderSoft, 1)
     frame.headerBackground:SetVertexColor(unpack(theme.headerBg))
     frame.title:SetTextColor(unpack(theme.textBright))
     frame.titleAccent:SetVertexColor(unpack(theme.accent))
     frame.meta:SetTextColor(unpack(theme.textSoft))
     frame.search:SetBackdropColor(unpack(theme.insetBg))
-    frame.search:SetBackdropBorderColor(unpack(theme.accent))
+    frame.search:SetBackdropBorderColor(unpack(frame.search:HasFocus() and theme.accent or theme.borderSoft))
     frame.search.placeholder:SetTextColor(unpack(theme.textSoft))
     frame.search.clear.label:SetTextColor(unpack(theme.textSoft))
     frame.close.label:SetTextColor(unpack(theme.textMuted))
-    frame.nav:SetBackdropColor(unpack(theme.panelBg))
-    frame.nav:SetBackdropBorderColor(unpack(theme.borderSoft))
-    frame.navTitle:SetTextColor(unpack(theme.textSoft))
     frame.page:SetBackdropColor(unpack(theme.panelBg))
-    frame.page:SetBackdropBorderColor(unpack(theme.borderSoft))
-    frame.pageTitle:SetTextColor(unpack(theme.textBright))
-    frame.pageSubtitle:SetTextColor(unpack(theme.textMuted))
-    frame.liveText:SetTextColor(unpack(theme.accent))
-    frame.footerLeft:SetTextColor(unpack(theme.textSoft))
-    frame.footerRight:SetTextColor(unpack(theme.textSoft))
+    frame.page:SetBackdropBorderColor(0, 0, 0, 0)
     frame.scroll.track:SetBackdropColor(unpack(theme.insetBg))
     frame.scroll.track:SetBackdropBorderColor(unpack(theme.borderSoft))
     frame.scroll.thumb:SetBackdropColor(unpack(theme.accentSoft))
     frame.scroll.thumb:SetBackdropBorderColor(unpack(theme.accent))
-    frame.navActive:SetBackdropColor(unpack(theme.navActiveBg))
-    frame.navActive:SetBackdropBorderColor(unpack(theme.accent))
-    frame.navActive.label:SetTextColor(unpack(theme.navActiveText))
-    for _, navButton in ipairs(frame.futureNav) do
+    for _, navButton in ipairs(frame.navButtons) do
         navButton:Refresh()
     end
     for _, card in ipairs(private.cards) do
-        card:SetBackdropColor(unpack(theme.insetBg))
-        card:SetBackdropBorderColor(unpack(theme.borderSoft))
+        card:SetBackdropColor(0, 0, 0, 0)
+        card:SetBackdropBorderColor(0, 0, 0, 0)
         card.title:SetTextColor(unpack(theme.text))
-        card.accent:SetVertexColor(unpack(theme.accent))
+        card.rule:SetVertexColor(unpack(theme.borderSoft))
     end
 end
 
@@ -282,11 +293,11 @@ local function _CreateSearchBox(parent)
     search:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 12, "")
     search:SetTextColor(0.86, 0.90, 0.94, 1)
     search:SetTextInsets(10, 32, 0, 0)
-    Widgets:ApplyBackdrop(search, _Theme().insetBg, _Theme().accent, 1)
+    Widgets:ApplyBackdrop(search, _Theme().insetBg, _Theme().borderSoft, 1)
 
     search.placeholder = Widgets:CreateFont(search, 11, _Theme().textSoft, "value")
     search.placeholder:SetPoint("LEFT", search, "LEFT", 10, 0)
-    search.placeholder:SetText("SEARCH SETTINGS")
+    search.placeholder:SetText("Search tracker settings")
 
     search.clear = CreateFrame("Button", nil, search)
     search.clear:SetSize(26, 26)
@@ -296,6 +307,7 @@ local function _CreateSearchBox(parent)
     search.clear.label:SetAllPoints()
     search.clear.label:SetJustifyH("CENTER")
     search.clear.label:SetText("x")
+    search.clear:Hide()
     search.clear:SetScript("OnEnter", function(self)
         self.label:SetTextColor(unpack(_Theme().closeHover))
         GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
@@ -313,19 +325,20 @@ local function _CreateSearchBox(parent)
 
     search:SetScript("OnEditFocusGained", function(self)
         self.placeholder:Hide()
-        self:SetBackdropBorderColor(unpack(_Theme().textBright))
+        self:SetBackdropBorderColor(unpack(_Theme().accent))
     end)
     search:SetScript("OnEditFocusLost", function(self)
         if self:GetText() == "" then
             self.placeholder:Show()
         end
-        self:SetBackdropBorderColor(unpack(_Theme().accent))
+        self:SetBackdropBorderColor(unpack(_Theme().borderSoft))
     end)
     search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     search:SetScript("OnTextChanged", function(self)
         local text = self:GetText() or ""
         Widgets:SetShown(self.placeholder, text == "" and not self:HasFocus())
+        Widgets:SetShown(self.clear, text ~= "")
         private.searchQuery = string.lower(text)
         if _ReflowCards then
             _ReflowCards(true)
@@ -335,52 +348,61 @@ local function _CreateSearchBox(parent)
 end
 
 local function _CreateNavButton(parent, name, description, active)
-    if not active then
-        return Widgets:CreateButton(parent, {
-            name = name,
-            description = description,
-            height = 30,
-            align = "LEFT",
-            disabled = function() return true end,
-        })
+    local button = CreateFrame("Button", nil, parent)
+    button:SetHeight(28)
+    button:RegisterForClicks("LeftButtonUp")
+    button.qcActive = active and true or false
+    Widgets:ApplyBackdrop(button, active and _Theme().navActiveBg or _Theme().navIdleBg, _Theme().borderSoft, 1)
+    button.label = Widgets:CreateFont(button, 11, active and _Theme().navActiveText or _Theme().textSoft)
+    button.label:SetPoint("LEFT", button, "LEFT", 7, 0)
+    button.label:SetPoint("RIGHT", button, "RIGHT", -7, 0)
+    button.label:SetJustifyH("CENTER")
+    button.label:SetText(name)
+    button.accent = Widgets:CreateSolid(button, "ARTWORK", _Theme().accent)
+    button.accent:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 1, 1)
+    button.accent:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -1, 1)
+    button.accent:SetHeight(2)
+
+    function button:Refresh()
+        self:SetBackdropColor(unpack(self.qcActive and _Theme().navActiveBg or _Theme().navIdleBg))
+        self:SetBackdropBorderColor(unpack(_Theme().borderSoft))
+        self.label:SetTextColor(unpack(self.qcActive and _Theme().navActiveText or _Theme().textSoft))
+        self.accent:SetVertexColor(unpack(_Theme().accent))
+        Widgets:SetShown(self.accent, self.qcActive)
     end
 
-    local button = CreateFrame("Button", nil, parent)
-    button:SetHeight(32)
-    Widgets:ApplyBackdrop(button, _Theme().navActiveBg, _Theme().accent, 1)
-    button.label = Widgets:CreateFont(button, 12, _Theme().navActiveText)
-    button.label:SetPoint("LEFT", button, "LEFT", 12, 0)
-    button.label:SetPoint("RIGHT", button, "RIGHT", -8, 0)
-    button.label:SetText(name)
     button:SetScript("OnEnter", function(self)
-        self:SetBackdropColor(unpack(_Theme().navHoverBg))
+        if not self.qcActive then
+            self:SetBackdropColor(unpack(_Theme().navHoverBg))
+        end
         GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
         GameTooltip:SetText(name, 1, 0.86, 0.35)
         GameTooltip:AddLine(description, 0.82, 0.85, 0.90, true)
         GameTooltip:Show()
     end)
     button:SetScript("OnLeave", function(self)
-        self:SetBackdropColor(unpack(_Theme().navActiveBg))
+        self:Refresh()
         GameTooltip:Hide()
     end)
+    button:Refresh()
     return button
 end
 
 local function _CreateCard(parent, title, description)
     local card = CreateFrame("Frame", nil, parent)
-    Widgets:ApplyBackdrop(card, _Theme().insetBg, _Theme().borderSoft, 1)
-    card.title = Widgets:CreateFont(card, 13, _Theme().text, "title")
-    card.title:SetPoint("TOPLEFT", card, "TOPLEFT", CARD_GUTTER, -10)
+    Widgets:ApplyBackdrop(card, {0, 0, 0, 0}, {0, 0, 0, 0}, 1)
+    card.title = Widgets:CreateFont(card, 12, _Theme().text, "title")
+    card.title:SetPoint("TOPLEFT", card, "TOPLEFT", CARD_GUTTER, -7)
     card.title:SetText(title)
     card.titleHit = CreateFrame("Frame", nil, card)
-    card.titleHit:SetPoint("TOPLEFT", card, "TOPLEFT", 7, -5)
-    card.titleHit:SetPoint("TOPRIGHT", card, "TOPRIGHT", -7, -5)
-    card.titleHit:SetHeight(28)
+    card.titleHit:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -3)
+    card.titleHit:SetPoint("TOPRIGHT", card, "TOPRIGHT", -6, -3)
+    card.titleHit:SetHeight(23)
     Widgets:AttachTooltip(card.titleHit, title, description)
-    card.accent = Widgets:CreateSolid(card, "ARTWORK", _Theme().accent)
-    card.accent:SetPoint("TOPLEFT", card, "TOPLEFT", 0, 0)
-    card.accent:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 0, 0)
-    card.accent:SetWidth(2)
+    card.rule = Widgets:CreateSolid(card, "ARTWORK", _Theme().borderSoft)
+    card.rule:SetPoint("TOPLEFT", card, "TOPLEFT", CARD_GUTTER, -26)
+    card.rule:SetPoint("TOPRIGHT", card, "TOPRIGHT", -CARD_GUTTER, -26)
+    card.rule:SetHeight(1)
     card.controls = {}
     card.qcSearchText = string.lower(title .. " " .. (description or ""))
     private.cards[#private.cards + 1] = card
@@ -732,40 +754,84 @@ _ReflowCards = function(resetScroll)
     local query = private.searchQuery or ""
     local y = 0
     local visibleCards = 0
+    local innerWidth = max(1, contentWidth - (CARD_GUTTER * 2))
+    local useColumns = innerWidth >= 500
+    local columnWidth = useColumns and floor((innerWidth - CONTROL_COLUMN_GAP) / 2) or innerWidth
+
+    local function _SizeControl(control, width)
+        if control.Layout then
+            control:Layout(width)
+        else
+            control:SetWidth(width)
+        end
+        local height = control.qcLayoutHeight or control:GetHeight() or 30
+        control:SetHeight(height)
+        return height
+    end
+
+    local function _AnchorControl(control, card, x, controlY)
+        control:ClearAllPoints()
+        control:SetPoint("TOPLEFT", card, "TOPLEFT", x, -controlY)
+        control:Show()
+    end
 
     scroll:SetContentWidth(contentWidth)
     for _, card in ipairs(private.cards) do
         local groupMatch = query == "" or string.find(card.qcSearchText, query, 1, true)
-        local controlY = 40
-        local visibleControls = 0
-        local controlWidth = max(1, contentWidth - (CARD_GUTTER * 2))
+        local controls = {}
         for _, control in ipairs(card.controls) do
             local visible = groupMatch or string.find(control.qcSearchText or "", query, 1, true)
             if visible then
-                if control.Layout then
-                    control:Layout(controlWidth)
-                else
-                    control:SetWidth(controlWidth)
-                end
-                local height = control.qcLayoutHeight or control:GetHeight() or 34
-                control:ClearAllPoints()
-                control:SetPoint("TOPLEFT", card, "TOPLEFT", CARD_GUTTER, -controlY)
-                control:SetHeight(height)
-                control:Show()
-                controlY = controlY + height + 2
-                visibleControls = visibleControls + 1
+                controls[#controls + 1] = control
             else
                 control:Hide()
             end
         end
 
-        if visibleControls > 0 then
+        if #controls > 0 then
+            local controlY = CARD_HEADER_HEIGHT
+            local pendingHalf
+            for _, control in ipairs(controls) do
+                local canUseHalf = useColumns
+                    and not control.qcFullWidth
+                    and (tonumber(control.qcMinimumWidth) or 0) <= columnWidth
+
+                if canUseHalf then
+                    if pendingHalf then
+                        local firstHeight = _SizeControl(pendingHalf, columnWidth)
+                        local secondHeight = _SizeControl(control, columnWidth)
+                        _AnchorControl(pendingHalf, card, CARD_GUTTER, controlY)
+                        _AnchorControl(control, card, CARD_GUTTER + columnWidth + CONTROL_COLUMN_GAP, controlY)
+                        controlY = controlY + max(firstHeight, secondHeight) + CONTROL_ROW_GAP
+                        pendingHalf = nil
+                    else
+                        pendingHalf = control
+                    end
+                else
+                    if pendingHalf then
+                        local pendingHeight = _SizeControl(pendingHalf, columnWidth)
+                        _AnchorControl(pendingHalf, card, CARD_GUTTER, controlY)
+                        controlY = controlY + pendingHeight + CONTROL_ROW_GAP
+                        pendingHalf = nil
+                    end
+                    local height = _SizeControl(control, innerWidth)
+                    _AnchorControl(control, card, CARD_GUTTER, controlY)
+                    controlY = controlY + height + CONTROL_ROW_GAP
+                end
+            end
+
+            if pendingHalf then
+                local pendingHeight = _SizeControl(pendingHalf, columnWidth)
+                _AnchorControl(pendingHalf, card, CARD_GUTTER, controlY)
+                controlY = controlY + pendingHeight + CONTROL_ROW_GAP
+            end
+
             card:SetWidth(contentWidth)
-            card:SetHeight(controlY + 8)
+            card:SetHeight(controlY + 5 - CONTROL_ROW_GAP)
             card:ClearAllPoints()
             card:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 0, -y)
             card:Show()
-            y = y + card:GetHeight() + 10
+            y = y + card:GetHeight() + CARD_GAP
             visibleCards = visibleCards + 1
         else
             card:Hide()
@@ -774,10 +840,11 @@ _ReflowCards = function(resetScroll)
 
     Widgets:SetShown(frame.noResults, visibleCards == 0)
     if visibleCards == 0 then
+        frame.noResults:ClearAllPoints()
         frame.noResults:SetPoint("TOP", scroll.content, "TOP", 0, -28)
         y = 80
     end
-    scroll:SetContentHeight(max(scroll.viewport:GetHeight() + 1, y > 0 and y - 10 or 1))
+    scroll:SetContentHeight(max(scroll.viewport:GetHeight() + 1, y > 0 and y - CARD_GAP or 1))
     if resetScroll then
         scroll:ScrollToTop()
     end
@@ -801,13 +868,27 @@ _LayoutFrame = function()
     end
     private.layoutBusy = true
 
-    local headerWidth = frame:GetWidth() - (OUTER_GUTTER * 2)
-    local reservedLeft = 196
-    local reservedRight = 212
-    local searchWidth = _Clamp(headerWidth - reservedLeft - reservedRight, 220, 340)
+    local frameWidth = frame:GetWidth()
+    local showMeta = frameWidth >= 820
+    Widgets:SetShown(frame.meta, showMeta)
+
+    local searchWidth = _Clamp(floor(frameWidth * 0.34), 200, 250)
     frame.search:SetWidth(searchWidth)
     frame.search:ClearAllPoints()
-    frame.search:SetPoint("RIGHT", frame.meta, "LEFT", -12, 0)
+    frame.search:SetPoint("RIGHT", showMeta and frame.meta or frame.close, "LEFT", -8, 0)
+
+    local navWidth = frame.nav:GetWidth()
+    local navGap = 4
+    local navButtonWidth = (navWidth - ((#frame.navButtons - 1) * navGap)) / #frame.navButtons
+    for index, button in ipairs(frame.navButtons) do
+        button:ClearAllPoints()
+        button:SetWidth(navButtonWidth)
+        if index == 1 then
+            button:SetPoint("TOPLEFT", frame.nav, "TOPLEFT", 0, 0)
+        else
+            button:SetPoint("LEFT", frame.navButtons[index - 1], "RIGHT", navGap, 0)
+        end
+    end
 
     local scrollWidth = frame.scroll:GetWidth()
     if scrollWidth and scrollWidth > 0 then
@@ -834,14 +915,14 @@ local function _CreateFrame()
     frame:SetResizable(true)
     frame:SetClampedToScreen(true)
     frame:EnableMouse(true)
-    Widgets:ApplyBackdrop(frame, _Theme().windowBg, _Theme().border, 1)
+    Widgets:ApplyBackdrop(frame, _Theme().windowBg, _Theme().borderSoft, 1)
     _RestoreGeometry(frame)
     private.frame = frame
 
     frame.header = CreateFrame("Frame", nil, frame)
-    frame.header:SetPoint("TOPLEFT", frame, "TOPLEFT", OUTER_GUTTER, -10)
-    frame.header:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -OUTER_GUTTER, -10)
-    frame.header:SetHeight(48)
+    frame.header:SetPoint("TOPLEFT", frame, "TOPLEFT", OUTER_GUTTER, -7)
+    frame.header:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -OUTER_GUTTER, -7)
+    frame.header:SetHeight(42)
     frame.header:EnableMouse(true)
     frame.header:RegisterForDrag("LeftButton")
     frame.headerBackground = Widgets:CreateSolid(frame.header, "BACKGROUND", _Theme().headerBg)
@@ -854,18 +935,18 @@ local function _CreateFrame()
         _SaveGeometry()
     end)
 
-    frame.title = Widgets:CreateFont(frame.header, 18, _Theme().textBright, "title")
-    frame.title:SetPoint("TOPLEFT", frame.header, "TOPLEFT", 14, -7)
+    frame.title = Widgets:CreateFont(frame.header, 16, _Theme().textBright, "title")
+    frame.title:SetPoint("LEFT", frame.header, "LEFT", 10, 1)
     frame.title:SetText("Questie Settings")
     frame.titleAccent = Widgets:CreateSolid(frame.header, "ARTWORK", _Theme().accent)
-    frame.titleAccent:SetPoint("TOPLEFT", frame.title, "BOTTOMLEFT", 0, -3)
-    frame.titleAccent:SetSize(frame.title:GetStringWidth() + 2, 2)
+    frame.titleAccent:SetPoint("TOPLEFT", frame.title, "BOTTOMLEFT", 0, -2)
+    frame.titleAccent:SetSize(frame.title:GetStringWidth(), 2)
 
     frame.close = CreateFrame("Button", nil, frame.header)
-    frame.close:SetSize(30, 30)
-    frame.close:SetPoint("RIGHT", frame.header, "RIGHT", -6, 0)
+    frame.close:SetSize(26, 26)
+    frame.close:SetPoint("RIGHT", frame.header, "RIGHT", -3, 0)
     frame.close:RegisterForClicks("LeftButtonUp")
-    frame.close.label = Widgets:CreateFont(frame.close, 17, _Theme().textMuted, "title")
+    frame.close.label = Widgets:CreateFont(frame.close, 15, _Theme().textMuted, "title")
     frame.close.label:SetAllPoints()
     frame.close.label:SetJustifyH("CENTER")
     frame.close.label:SetText("x")
@@ -880,89 +961,58 @@ local function _CreateFrame()
     frame.close:SetScript("OnClick", function() frame:Hide() end)
 
     frame.meta = Widgets:CreateFont(frame.header, 10, _Theme().textSoft, "value")
-    frame.meta:SetPoint("RIGHT", frame.close, "LEFT", -10, 0)
-    frame.meta:SetWidth(160)
+    frame.meta:SetPoint("RIGHT", frame.close, "LEFT", -8, 0)
+    frame.meta:SetWidth(190)
     frame.meta:SetJustifyH("RIGHT")
-    frame.meta:SetText("TRACKER  |  LIVE")
 
     frame.search = _CreateSearchBox(frame.header)
 
-    frame.footer = CreateFrame("Frame", nil, frame)
-    frame.footer:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", OUTER_GUTTER, 9)
-    frame.footer:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -OUTER_GUTTER, 9)
-    frame.footer:SetHeight(20)
-    frame.footerLeft = Widgets:CreateFont(frame.footer, 9, _Theme().textSoft, "value")
-    frame.footerLeft:SetPoint("LEFT", frame.footer, "LEFT", 3, 0)
-    frame.footerRight = Widgets:CreateFont(frame.footer, 9, _Theme().textSoft, "value")
-    frame.footerRight:SetPoint("RIGHT", frame.footer, "RIGHT", -20, 0)
-    frame.footerRight:SetJustifyH("RIGHT")
-
     frame.body = CreateFrame("Frame", nil, frame)
-    frame.body:SetPoint("TOPLEFT", frame.header, "BOTTOMLEFT", 0, -8)
-    frame.body:SetPoint("BOTTOMRIGHT", frame.footer, "TOPRIGHT", 0, 7)
+    frame.body:SetPoint("TOPLEFT", frame.header, "BOTTOMLEFT", 0, -6)
+    frame.body:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -OUTER_GUTTER, OUTER_GUTTER)
 
     frame.nav = CreateFrame("Frame", nil, frame.body)
     frame.nav:SetPoint("TOPLEFT", frame.body, "TOPLEFT", 0, 0)
-    frame.nav:SetPoint("BOTTOMLEFT", frame.body, "BOTTOMLEFT", 0, 0)
-    frame.nav:SetWidth(NAV_WIDTH)
-    Widgets:ApplyBackdrop(frame.nav, _Theme().panelBg, _Theme().borderSoft, 1)
-    frame.navTitle = Widgets:CreateFont(frame.nav, 9, _Theme().textSoft, "value")
-    frame.navTitle:SetPoint("TOPLEFT", frame.nav, "TOPLEFT", 12, -11)
-    frame.navTitle:SetText("WORKSPACES")
+    frame.nav:SetPoint("TOPRIGHT", frame.body, "TOPRIGHT", 0, 0)
+    frame.nav:SetHeight(28)
 
     frame.navActive = _CreateNavButton(frame.nav, "Tracker", "Tracker layout, surface, scale, and quest-band presentation.", true)
-    frame.navActive:SetPoint("TOPLEFT", frame.nav, "TOPLEFT", 8, -34)
-    frame.navActive:SetPoint("TOPRIGHT", frame.nav, "TOPRIGHT", -8, -34)
 
-    frame.futureNav = {}
+    frame.navButtons = {frame.navActive}
     local future = {
         {"Map & Icons", "Planned next: world map, minimap, objective, and quest-note presentation."},
         {"Automation", "Planned next: quest interaction, tracking, and vendor automation."},
         {"Profiles", "Planned next: profile switching, import, export, and sharing."},
     }
-    local previous = frame.navActive
     for _, info in ipairs(future) do
         local button = _CreateNavButton(frame.nav, info[1], info[2], false)
-        button:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -6)
-        button:SetPoint("TOPRIGHT", previous, "BOTTOMRIGHT", 0, -6)
-        frame.futureNav[#frame.futureNav + 1] = button
-        previous = button
+        frame.navButtons[#frame.navButtons + 1] = button
     end
 
     frame.page = CreateFrame("Frame", nil, frame.body)
-    frame.page:SetPoint("TOPLEFT", frame.nav, "TOPRIGHT", 10, 0)
+    frame.page:SetPoint("TOPLEFT", frame.nav, "BOTTOMLEFT", 0, -5)
     frame.page:SetPoint("BOTTOMRIGHT", frame.body, "BOTTOMRIGHT", 0, 0)
-    Widgets:ApplyBackdrop(frame.page, _Theme().panelBg, _Theme().borderSoft, 1)
-    frame.pageTitle = Widgets:CreateFont(frame.page, 18, _Theme().textBright, "title")
-    frame.pageTitle:SetPoint("TOPLEFT", frame.page, "TOPLEFT", 16, -12)
-    frame.pageTitle:SetText("Tracker")
-    frame.pageSubtitle = Widgets:CreateFont(frame.page, 10, _Theme().textMuted)
-    frame.pageSubtitle:SetPoint("TOPLEFT", frame.page, "TOPLEFT", 16, -36)
-    frame.pageSubtitle:SetPoint("TOPRIGHT", frame.page, "TOPRIGHT", -72, -36)
-    frame.pageSubtitle:SetText("Direct controls, immediate preview, cached layout.")
-    frame.liveText = Widgets:CreateFont(frame.page, 9, _Theme().accent, "value")
-    frame.liveText:SetPoint("TOPRIGHT", frame.page, "TOPRIGHT", -16, -18)
-    frame.liveText:SetText("LIVE")
+    Widgets:ApplyBackdrop(frame.page, _Theme().panelBg, {0, 0, 0, 0}, 1)
 
     frame.scroll = Widgets:CreateScrollArea(frame.page)
-    frame.scroll:SetPoint("TOPLEFT", frame.page, "TOPLEFT", 12, -58)
-    frame.scroll:SetPoint("BOTTOMRIGHT", frame.page, "BOTTOMRIGHT", -10, 10)
+    frame.scroll:SetPoint("TOPLEFT", frame.page, "TOPLEFT", 8, -6)
+    frame.scroll:SetPoint("BOTTOMRIGHT", frame.page, "BOTTOMRIGHT", -6, 12)
     frame.noResults = Widgets:CreateFont(frame.scroll.content, 12, _Theme().textSoft)
-    frame.noResults:SetText("No Tracker settings match your search.")
+    frame.noResults:SetText("No tracker settings match your search.")
     frame.noResults:Hide()
 
     _CreateTrackerWorkspace(frame.scroll.content)
 
     frame.sizer = CreateFrame("Button", nil, frame)
-    frame.sizer:SetSize(22, 22)
-    frame.sizer:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -3, 3)
+    frame.sizer:SetSize(18, 18)
+    frame.sizer:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -2, 2)
     frame.sizer:RegisterForClicks("LeftButtonDown", "LeftButtonUp")
     frame.sizer.lines = {}
     for index = 1, 3 do
         local line = Widgets:CreateSolid(frame.sizer, "ARTWORK", _Theme().textSoft)
-        line:SetSize(4 + (index * 3), 1)
-        line:SetPoint("BOTTOMRIGHT", frame.sizer, "BOTTOMRIGHT", -3, 3 + ((index - 1) * 4))
-        line:SetAlpha(0.55)
+        line:SetSize(3 + (index * 2), 1)
+        line:SetPoint("BOTTOMRIGHT", frame.sizer, "BOTTOMRIGHT", -2, 2 + ((index - 1) * 3))
+        line:SetAlpha(0.38)
         frame.sizer.lines[index] = line
     end
     frame.sizer:SetScript("OnEnter", function()
@@ -1029,7 +1079,7 @@ function QuestieConfigNext:Refresh()
     end
     _ApplyShellTheme()
     _RefreshStatus()
-    _RefreshControls(true)
+    _RefreshControls(false)
 end
 
 function QuestieConfigNext:Open()

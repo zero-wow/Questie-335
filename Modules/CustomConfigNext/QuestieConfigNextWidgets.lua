@@ -147,24 +147,26 @@ end
 
 function QuestieConfigNextWidgets:CreateButton(parent, spec)
     local widget = CreateFrame("Button", nil, parent)
-    widget:SetHeight(spec.height or 30)
+    widget:SetHeight(spec.height or 28)
     widget:RegisterForClicks("LeftButtonUp")
-    widget.qcLayoutHeight = spec.height or 30
+    widget.qcLayoutHeight = spec.height or 28
+    widget.qcFullWidth = spec.fullWidth and true or false
     widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or ""))
     QuestieConfigNextWidgets:ApplyBackdrop(widget, _Theme().navIdleBg, _Theme().borderSoft, 1)
 
-    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 12, _Theme().textBright)
-    widget.label:SetPoint("LEFT", widget, "LEFT", 12, 0)
-    widget.label:SetPoint("RIGHT", widget, "RIGHT", -12, 0)
-    widget.label:SetJustifyH(spec.align or "CENTER")
+    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
     widget.label:SetText(spec.name or "Action")
+    widget.qcMinimumWidth = max(120, widget.label:GetStringWidth() + 24)
+    widget.label:SetPoint("LEFT", widget, "LEFT", 9, 0)
+    widget.label:SetPoint("RIGHT", widget, "RIGHT", -9, 0)
+    widget.label:SetJustifyH(spec.align or "CENTER")
 
     function widget:Refresh()
         local disabled = _GetDisabled(spec)
         self.qcDisabled = disabled
-        self.label:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textBright))
+        self.label:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textMuted))
         self:SetBackdropColor(unpack(disabled and _Theme().insetBg or _Theme().navIdleBg))
-        self:SetBackdropBorderColor(unpack(disabled and _Theme().borderSoft or _Theme().accent))
+        self:SetBackdropBorderColor(unpack((not disabled and spec.primary) and _Theme().accent or _Theme().borderSoft))
     end
 
     widget:SetScript("OnEnter", function(self)
@@ -179,13 +181,15 @@ function QuestieConfigNextWidgets:CreateButton(parent, spec)
     end)
     widget:SetScript("OnMouseDown", function(self)
         if not self.qcDisabled then
-            self.label:SetPoint("LEFT", self, "LEFT", 12, -1)
-            self.label:SetPoint("RIGHT", self, "RIGHT", -12, -1)
+            self.label:ClearAllPoints()
+            self.label:SetPoint("LEFT", self, "LEFT", 9, -1)
+            self.label:SetPoint("RIGHT", self, "RIGHT", -9, -1)
         end
     end)
     widget:SetScript("OnMouseUp", function(self)
-        self.label:SetPoint("LEFT", self, "LEFT", 12, 0)
-        self.label:SetPoint("RIGHT", self, "RIGHT", -12, 0)
+        self.label:ClearAllPoints()
+        self.label:SetPoint("LEFT", self, "LEFT", 9, 0)
+        self.label:SetPoint("RIGHT", self, "RIGHT", -9, 0)
     end)
     widget:SetScript("OnClick", function(self)
         if self.qcDisabled then
@@ -205,23 +209,25 @@ end
 
 function QuestieConfigNextWidgets:CreateToggle(parent, spec)
     local widget = CreateFrame("Button", nil, parent)
-    widget:SetHeight(34)
+    widget:SetHeight(30)
     widget:RegisterForClicks("LeftButtonUp")
-    widget.qcLayoutHeight = 34
+    widget.qcLayoutHeight = 30
+    widget.qcFullWidth = spec.fullWidth and true or false
     widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or ""))
 
-    widget.hover = QuestieConfigNextWidgets:CreateSolid(widget, "BACKGROUND", _Theme().accentSoft)
+    widget.hover = QuestieConfigNextWidgets:CreateSolid(widget, "BACKGROUND", _Theme().navHoverBg)
     widget.hover:SetAllPoints()
     widget.hover:Hide()
 
-    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 12, _Theme().textMuted)
-    widget.label:SetPoint("LEFT", widget, "LEFT", 4, 0)
-    widget.label:SetPoint("RIGHT", widget, "RIGHT", -64, 0)
+    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
     widget.label:SetText(spec.name or "Toggle")
+    widget.qcMinimumWidth = max(150, widget.label:GetStringWidth() + 58)
+    widget.label:SetPoint("LEFT", widget, "LEFT", 3, 0)
+    widget.label:SetPoint("RIGHT", widget, "RIGHT", -52, 0)
 
     widget.switch = CreateFrame("Frame", nil, widget)
-    widget.switch:SetSize(42, 18)
-    widget.switch:SetPoint("RIGHT", widget, "RIGHT", -4, 0)
+    widget.switch:SetSize(36, 16)
+    widget.switch:SetPoint("RIGHT", widget, "RIGHT", -3, 0)
     QuestieConfigNextWidgets:ApplyBackdrop(widget.switch, _Theme().insetBg, _Theme().borderSoft, 1)
 
     widget.fill = QuestieConfigNextWidgets:CreateSolid(widget.switch, "BACKGROUND", _Theme().accentSoft)
@@ -229,7 +235,7 @@ function QuestieConfigNextWidgets:CreateToggle(parent, spec)
     widget.fill:SetPoint("BOTTOMRIGHT", widget.switch, "BOTTOMRIGHT", -1, 1)
 
     widget.thumb = QuestieConfigNextWidgets:CreateSolid(widget.switch, "ARTWORK", _Theme().textSoft)
-    widget.thumb:SetSize(14, 14)
+    widget.thumb:SetSize(12, 12)
 
     function widget:Refresh()
         local disabled = _GetDisabled(spec)
@@ -245,7 +251,7 @@ function QuestieConfigNextWidgets:CreateToggle(parent, spec)
     end
 
     widget:SetScript("OnEnter", function(self)
-        self.hover:SetVertexColor(unpack(_Theme().accentSoft))
+        self.hover:SetVertexColor(unpack(_Theme().navHoverBg))
         self.hover:Show()
         _ShowTooltip(self, spec.name, spec.description)
     end)
@@ -271,13 +277,15 @@ end
 
 function QuestieConfigNextWidgets:CreateSegmented(parent, spec)
     local widget = CreateFrame("Frame", nil, parent)
-    widget:SetHeight(38)
-    widget.qcLayoutHeight = 38
+    widget:SetHeight(34)
+    widget.qcLayoutHeight = 34
+    widget.qcFullWidth = true
+    widget.qcMinimumWidth = 390
     widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or ""))
     widget.options = spec.options or {}
     widget.buttons = {}
 
-    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 12, _Theme().textMuted)
+    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
     widget.label:SetText(spec.name or "Choice")
 
     widget.group = CreateFrame("Frame", nil, widget)
@@ -286,7 +294,7 @@ function QuestieConfigNextWidgets:CreateSegmented(parent, spec)
         local button = CreateFrame("Button", nil, widget.group)
         button:RegisterForClicks("LeftButtonUp")
         QuestieConfigNextWidgets:ApplyBackdrop(button, _Theme().insetBg, _Theme().borderSoft, 1)
-        button.label = QuestieConfigNextWidgets:CreateFont(button, 11, _Theme().textMuted)
+        button.label = QuestieConfigNextWidgets:CreateFont(button, 10, _Theme().textMuted)
         button.label:SetPoint("LEFT", button, "LEFT", 5, 0)
         button.label:SetPoint("RIGHT", button, "RIGHT", -5, 0)
         button.label:SetJustifyH("CENTER")
@@ -320,23 +328,23 @@ function QuestieConfigNextWidgets:CreateSegmented(parent, spec)
 
     function widget:Layout(width)
         self:SetWidth(width)
-        local stacked = width < 470
-        self.qcLayoutHeight = stacked and 64 or 38
+        local stacked = width < 440
+        self.qcLayoutHeight = stacked and 56 or 34
         self:SetHeight(self.qcLayoutHeight)
         self.label:ClearAllPoints()
         self.group:ClearAllPoints()
         if stacked then
-            self.label:SetPoint("TOPLEFT", self, "TOPLEFT", 4, -4)
-            self.label:SetPoint("TOPRIGHT", self, "TOPRIGHT", -4, -4)
-            self.group:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", 4, 3)
-            self.group:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -4, 3)
-            self.group:SetHeight(27)
+            self.label:SetPoint("TOPLEFT", self, "TOPLEFT", 3, -2)
+            self.label:SetPoint("TOPRIGHT", self, "TOPRIGHT", -3, -2)
+            self.group:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", 3, 2)
+            self.group:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3, 2)
+            self.group:SetHeight(24)
         else
-            local groupWidth = min(320, max(235, floor(width * 0.58)))
-            self.label:SetPoint("LEFT", self, "LEFT", 4, 0)
-            self.label:SetPoint("RIGHT", self, "RIGHT", -(groupWidth + 12), 0)
-            self.group:SetPoint("RIGHT", self, "RIGHT", -4, 0)
-            self.group:SetSize(groupWidth, 27)
+            local groupWidth = min(300, max(220, floor(width * 0.56)))
+            self.label:SetPoint("LEFT", self, "LEFT", 3, 0)
+            self.label:SetPoint("RIGHT", self, "RIGHT", -(groupWidth + 9), 0)
+            self.group:SetPoint("RIGHT", self, "RIGHT", -3, 0)
+            self.group:SetSize(groupWidth, 24)
         end
 
         local count = max(1, #self.buttons)
@@ -344,7 +352,7 @@ function QuestieConfigNextWidgets:CreateSegmented(parent, spec)
         local buttonWidth = (self.group:GetWidth() - ((count - 1) * spacing)) / count
         for index, button in ipairs(self.buttons) do
             button:ClearAllPoints()
-            button:SetSize(buttonWidth, 27)
+            button:SetSize(buttonWidth, 24)
             if index == 1 then
                 button:SetPoint("LEFT", self.group, "LEFT", 0, 0)
             else
@@ -374,24 +382,26 @@ end
 
 function QuestieConfigNextWidgets:CreateSlider(parent, spec)
     local widget = CreateFrame("Frame", nil, parent)
-    widget:SetHeight(52)
-    widget.qcLayoutHeight = 52
+    widget:SetHeight(44)
+    widget.qcLayoutHeight = 44
+    widget.qcFullWidth = true
+    widget.qcMinimumWidth = 360
     widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or ""))
 
-    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 12, _Theme().textMuted)
-    widget.label:SetPoint("TOPLEFT", widget, "TOPLEFT", 4, -3)
+    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
+    widget.label:SetPoint("TOPLEFT", widget, "TOPLEFT", 3, -1)
     widget.label:SetText(spec.name or "Value")
 
-    widget.valueText = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textBright, "value")
-    widget.valueText:SetPoint("TOPRIGHT", widget, "TOPRIGHT", -4, -3)
+    widget.valueText = QuestieConfigNextWidgets:CreateFont(widget, 10, _Theme().textBright, "value")
+    widget.valueText:SetPoint("TOPRIGHT", widget, "TOPRIGHT", -3, -1)
     widget.valueText:SetJustifyH("RIGHT")
 
     local function _CreateStepButton(symbol)
         local button = CreateFrame("Button", nil, widget)
-        button:SetSize(24, 22)
+        button:SetSize(20, 18)
         button:RegisterForClicks("LeftButtonUp")
         QuestieConfigNextWidgets:ApplyBackdrop(button, _Theme().insetBg, _Theme().borderSoft, 1)
-        button.label = QuestieConfigNextWidgets:CreateFont(button, 15, _Theme().textMuted)
+        button.label = QuestieConfigNextWidgets:CreateFont(button, 13, _Theme().textMuted)
         button.label:SetAllPoints()
         button.label:SetJustifyH("CENTER")
         button.label:SetText(symbol)
@@ -399,15 +409,15 @@ function QuestieConfigNextWidgets:CreateSlider(parent, spec)
     end
 
     widget.minus = _CreateStepButton("-")
-    widget.minus:SetPoint("BOTTOMLEFT", widget, "BOTTOMLEFT", 4, 3)
+    widget.minus:SetPoint("BOTTOMLEFT", widget, "BOTTOMLEFT", 3, 2)
     widget.plus = _CreateStepButton("+")
-    widget.plus:SetPoint("BOTTOMRIGHT", widget, "BOTTOMRIGHT", -4, 3)
+    widget.plus:SetPoint("BOTTOMRIGHT", widget, "BOTTOMRIGHT", -3, 2)
 
     widget.slider = CreateFrame("Slider", nil, widget)
     widget.slider:SetOrientation("HORIZONTAL")
-    widget.slider:SetPoint("LEFT", widget.minus, "RIGHT", 10, 0)
-    widget.slider:SetPoint("RIGHT", widget.plus, "LEFT", -10, 0)
-    widget.slider:SetHeight(22)
+    widget.slider:SetPoint("LEFT", widget.minus, "RIGHT", 8, 0)
+    widget.slider:SetPoint("RIGHT", widget.plus, "LEFT", -8, 0)
+    widget.slider:SetHeight(18)
     widget.slider:SetMinMaxValues(spec.min or 0, spec.max or 100)
     widget.slider:SetValueStep(spec.step or 1)
     widget.track = QuestieConfigNextWidgets:CreateSolid(widget.slider, "BACKGROUND", _Theme().borderSoft)
@@ -416,7 +426,7 @@ function QuestieConfigNextWidgets:CreateSlider(parent, spec)
     widget.track:SetHeight(3)
     widget.slider:SetThumbTexture("Interface\\Buttons\\WHITE8X8")
     widget.thumb = widget.slider:GetThumbTexture()
-    widget.thumb:SetSize(10, 18)
+    widget.thumb:SetSize(8, 16)
 
     local function _SetValue(value, notify)
         value = _Clamp(_Round(tonumber(value) or spec.min or 0, spec.step), spec.min or 0, spec.max or 100)
@@ -467,12 +477,12 @@ function QuestieConfigNextWidgets:CreateSlider(parent, spec)
         _SetValue(spec.get and spec.get() or spec.min or 0, false)
         self.label:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textMuted))
         self.valueText:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textBright))
-        self.track:SetVertexColor(unpack(disabled and _Theme().borderSoft or _Theme().accentSoft))
+        self.track:SetVertexColor(unpack(_Theme().borderSoft))
         self.thumb:SetVertexColor(unpack(disabled and _Theme().textSoft or _Theme().accent))
         self.slider:EnableMouse(not disabled)
         for _, button in ipairs({self.minus, self.plus}) do
             button:SetBackdropColor(unpack(_Theme().insetBg))
-            button:SetBackdropBorderColor(unpack(disabled and _Theme().borderSoft or _Theme().accentSoft))
+            button:SetBackdropBorderColor(unpack(_Theme().borderSoft))
             button.label:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textMuted))
         end
     end
@@ -487,31 +497,45 @@ end
 
 function QuestieConfigNextWidgets:CreateColor(parent, spec)
     local widget = CreateFrame("Button", nil, parent)
-    widget:SetHeight(36)
+    widget:SetHeight(30)
     widget:RegisterForClicks("LeftButtonUp")
-    widget.qcLayoutHeight = 36
+    widget.qcLayoutHeight = 30
+    widget.qcFullWidth = spec.fullWidth and true or false
     widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or ""))
 
-    widget.hover = QuestieConfigNextWidgets:CreateSolid(widget, "BACKGROUND", _Theme().accentSoft)
+    widget.hover = QuestieConfigNextWidgets:CreateSolid(widget, "BACKGROUND", _Theme().navHoverBg)
     widget.hover:SetAllPoints()
     widget.hover:Hide()
-    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 12, _Theme().textMuted)
-    widget.label:SetPoint("LEFT", widget, "LEFT", 4, 0)
-    widget.label:SetPoint("RIGHT", widget, "RIGHT", -146, 0)
+    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
     widget.label:SetText(spec.name or "Color")
+    widget.qcMinimumWidth = max(150, widget.label:GetStringWidth() + 48)
+    widget.label:SetPoint("LEFT", widget, "LEFT", 3, 0)
 
     widget.valueText = QuestieConfigNextWidgets:CreateFont(widget, 10, _Theme().textSoft, "value")
-    widget.valueText:SetPoint("RIGHT", widget, "RIGHT", -34, 0)
-    widget.valueText:SetWidth(104)
+    widget.valueText:SetPoint("RIGHT", widget, "RIGHT", -29, 0)
+    widget.valueText:SetWidth(100)
     widget.valueText:SetJustifyH("RIGHT")
 
     widget.swatch = CreateFrame("Frame", nil, widget)
-    widget.swatch:SetSize(24, 20)
-    widget.swatch:SetPoint("RIGHT", widget, "RIGHT", -4, 0)
+    widget.swatch:SetSize(20, 16)
+    widget.swatch:SetPoint("RIGHT", widget, "RIGHT", -3, 0)
     QuestieConfigNextWidgets:ApplyBackdrop(widget.swatch, _Theme().insetBg, _Theme().borderSoft, 1)
     widget.swatchColor = QuestieConfigNextWidgets:CreateSolid(widget.swatch, "ARTWORK", {1, 1, 1, 1})
-    widget.swatchColor:SetPoint("TOPLEFT", widget.swatch, "TOPLEFT", 3, -3)
-    widget.swatchColor:SetPoint("BOTTOMRIGHT", widget.swatch, "BOTTOMRIGHT", -3, 3)
+    widget.swatchColor:SetPoint("TOPLEFT", widget.swatch, "TOPLEFT", 2, -2)
+    widget.swatchColor:SetPoint("BOTTOMRIGHT", widget.swatch, "BOTTOMRIGHT", -2, 2)
+
+    function widget:Layout(width)
+        self:SetWidth(width)
+        self.label:ClearAllPoints()
+        self.label:SetPoint("LEFT", self, "LEFT", 3, 0)
+        if width < 290 then
+            self.valueText:Hide()
+            self.label:SetPoint("RIGHT", self, "RIGHT", -29, 0)
+        else
+            self.valueText:Show()
+            self.label:SetPoint("RIGHT", self, "RIGHT", -136, 0)
+        end
+    end
 
     local function _ReadColor()
         local r, g, b, a = spec.get()
@@ -537,7 +561,7 @@ function QuestieConfigNextWidgets:CreateColor(parent, spec)
         self.qcDisabled = disabled
         self.label:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textMuted))
         self.valueText:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textSoft))
-        self.swatch:SetBackdropBorderColor(unpack(disabled and _Theme().borderSoft or _Theme().accentSoft))
+        self.swatch:SetBackdropBorderColor(unpack(_Theme().borderSoft))
         self.swatchColor:SetVertexColor(r, g, b, disabled and 0.35 or max(0.35, a))
         if spec.hasAlpha then
             self.valueText:SetText(string.format("%s  %d%%", _ColorHex(r, g, b), floor(a * 100 + 0.5)))
@@ -547,6 +571,7 @@ function QuestieConfigNextWidgets:CreateColor(parent, spec)
     end
 
     widget:SetScript("OnEnter", function(self)
+        self.hover:SetVertexColor(unpack(_Theme().navHoverBg))
         self.hover:Show()
         _ShowTooltip(self, spec.name, spec.description)
     end)
@@ -577,6 +602,7 @@ function QuestieConfigNextWidgets:CreateColor(parent, spec)
         ColorPickerFrame:Hide()
         ColorPickerFrame:Show()
     end)
+    widget:Layout(320)
     widget:Refresh()
     return widget
 end
@@ -589,16 +615,16 @@ function QuestieConfigNextWidgets:CreateScrollArea(parent)
     local thumb = CreateFrame("Button", nil, track)
 
     viewport:SetPoint("TOPLEFT", area, "TOPLEFT", 0, 0)
-    viewport:SetPoint("BOTTOMRIGHT", area, "BOTTOMRIGHT", -15, 0)
+    viewport:SetPoint("BOTTOMRIGHT", area, "BOTTOMRIGHT", -13, 0)
     viewport:EnableMouseWheel(true)
     content:SetSize(1, 1)
     viewport:SetScrollChild(content)
 
     track:SetPoint("TOPRIGHT", area, "TOPRIGHT", -2, -2)
     track:SetPoint("BOTTOMRIGHT", area, "BOTTOMRIGHT", -2, 2)
-    track:SetWidth(9)
+    track:SetWidth(8)
     QuestieConfigNextWidgets:ApplyBackdrop(track, _Theme().insetBg, _Theme().borderSoft, 1)
-    thumb:SetWidth(7)
+    thumb:SetWidth(6)
     QuestieConfigNextWidgets:ApplyBackdrop(thumb, _Theme().accentSoft, _Theme().accent, 1)
 
     area.viewport = viewport
