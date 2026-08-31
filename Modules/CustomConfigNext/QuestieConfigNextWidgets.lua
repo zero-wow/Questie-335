@@ -8,6 +8,12 @@ local min = math.min
 
 local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
 local activeTheme
+local selectPopup
+local selectMeasure
+local selectOptionCache = {}
+local selectMetadataCache = {}
+local SELECT_VISIBLE_ROWS = 10
+local SELECT_ROW_HEIGHT = 22
 
 local fallbackTheme = {
     windowBg = {0.035, 0.041, 0.051, 0.97},
@@ -384,8 +390,8 @@ function QuestieConfigNextWidgets:CreateSlider(parent, spec)
     local widget = CreateFrame("Frame", nil, parent)
     widget:SetHeight(44)
     widget.qcLayoutHeight = 44
-    widget.qcFullWidth = true
-    widget.qcMinimumWidth = 360
+    widget.qcFullWidth = spec.fullWidth ~= false
+    widget.qcMinimumWidth = spec.minWidth or 280
     widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or ""))
 
     widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
@@ -448,6 +454,11 @@ function QuestieConfigNextWidgets:CreateSlider(parent, spec)
             return
         end
         _SetValue(value, true)
+    end)
+    widget.slider:SetScript("OnMouseUp", function()
+        if not widget.qcDisabled and spec.onDragStop then
+            spec.onDragStop(widget.qcValue)
+        end
     end)
     widget.slider:SetScript("OnEnter", function()
         _ShowTooltip(widget, spec.name, spec.description)
@@ -605,6 +616,441 @@ function QuestieConfigNextWidgets:CreateColor(parent, spec)
     widget:Layout(320)
     widget:Refresh()
     return widget
+end
+
+local function _NormalizeSelectOptions(spec)
+    if spec.cacheKey and selectOptionCache[spec.cacheKey] then
+        return selectOptionCache[spec.cacheKey]
+    end
+
+    local source = type(spec.options) == "function" and spec.options() or spec.options or {}
+    local options = {}
+
+    if #source > 0 then
+        for _, option in ipairs(source) do
+            if type(option) == "table" then
+                options[#options + 1] = {
+                    value = option.value,
+                    label = tostring(option.label or option.value or ""),
+                }
+            else
+                options[#options + 1] = {value = option, label = tostring(option)}
+            end
+        end
+    else
+        for value, label in pairs(source) do
+            options[#options + 1] = {value = value, label = tostring(label)}
+        end
+        table.sort(options, function(a, b)
+            return string.upper(a.label) < string.upper(b.label)
+        end)
+    end
+
+    if spec.firstValue ~= nil then
+        for index, option in ipairs(options) do
+            if option.value == spec.firstValue and index ~= 1 then
+                table.remove(options, index)
+                table.insert(options, 1, option)
+                break
+            end
+        end
+    end
+
+    if spec.cacheKey then
+        selectOptionCache[spec.cacheKey] = options
+    end
+    return options
+end
+
+local function _MeasureSelectOption(label, fontPath)
+    if not selectMeasure then
+        selectMeasure = UIParent:CreateFontString(nil, "OVERLAY")
+        selectMeasure:Hide()
+    end
+    selectMeasure:SetFont(fontPath or _FetchFont("Expressway"), 11, "")
+    selectMeasure:SetText(label or "")
+    return selectMeasure:GetStringWidth() or 0
+end
+
+local function _RefreshSelectPopup()
+    local popup = selectPopup
+    local owner = popup and popup.owner
+    if not (popup and owner) then
+        return
+    end
+
+    local query = popup.searchable and string.lower(popup.search:GetText() or "") or ""
+    local filtered = popup.filtered
+    for index = #filtered, 1, -1 do
+        filtered[index] = nil
+    end
+    for _, option in ipairs(owner.qcOptions) do
+        if query == "" or string.find(string.lower(option.label), query, 1, true) then
+            filtered[#filtered + 1] = option
+        end
+    end
+
+    popup.visibleRows = min(SELECT_VISIBLE_ROWS, max(1, #filtered))
+    popup:SetHeight(8 + (popup.visibleRows * SELECT_ROW_HEIGHT) + (popup.searchable and 29 or 0))
+    popup.maximumOffset = max(0, #filtered - popup.visibleRows)
+    popup.offset = _Clamp(popup.offset or 0, 0, popup.maximumOffset)
+    local selectedValue = owner.qcValue
+    for index, row in ipairs(popup.rows) do
+        local option = index <= popup.visibleRows and filtered[index + popup.offset] or nil
+        if option then
+            row.qcOption = option
+            row.label:SetText(option.label)
+            if owner.qcSpec.fontPreview and owner.qcSpec.fontPath then
+                row.label:SetFont(owner.qcSpec.fontPath(option.value), 11, "")
+            else
+                row.label:SetFont(_FetchFont("Expressway"), 11, "")
+            end
+            local selected = option.value == selectedValue
+            row:SetBackdropColor(unpack(selected and _Theme().navActiveBg or _Theme().insetBg))
+            row:SetBackdropBorderColor(0, 0, 0, 0)
+            row.label:SetTextColor(unpack(selected and _Theme().navActiveText or _Theme().textMuted))
+            row:Show()
+        else
+            row.qcOption = nil
+            row:Hide()
+        end
+    end
+
+    QuestieConfigNextWidgets:SetShown(popup.noResults, #filtered == 0)
+    QuestieConfigNextWidgets:SetShown(popup.track, popup.maximumOffset > 0)
+    if popup.maximumOffset > 0 then
+        local trackHeight = popup.track:GetHeight() - 2
+        local thumbHeight = max(28, floor(trackHeight * (popup.visibleRows / #filtered)))
+        thumbHeight = min(trackHeight, thumbHeight)
+        local travel = max(0, trackHeight - thumbHeight)
+        local offset = (popup.offset / popup.maximumOffset) * travel
+        popup.thumb:SetHeight(thumbHeight)
+        popup.thumb:ClearAllPoints()
+        popup.thumb:SetPoint("TOP", popup.track, "TOP", 0, -(1 + offset))
+    end
+end
+
+local function _ScrollSelectPopup(delta)
+    local popup = selectPopup
+    if not (popup and popup.owner and popup.maximumOffset) then
+        return
+    end
+    popup.offset = _Clamp((popup.offset or 0) + delta, 0, popup.maximumOffset)
+    _RefreshSelectPopup()
+end
+
+local function _EnsureSelectPopup()
+    if selectPopup then
+        return selectPopup
+    end
+
+    local popup = CreateFrame("Frame", "QuestieConfigNextSelectPopup", UIParent)
+    popup:SetFrameStrata("TOOLTIP")
+    popup:SetFrameLevel(320)
+    popup:SetClampedToScreen(true)
+    popup:EnableMouse(true)
+    popup:EnableMouseWheel(true)
+    QuestieConfigNextWidgets:ApplyBackdrop(popup, _Theme().windowBg, _Theme().borderSoft, 1)
+    popup.filtered = {}
+    popup.rows = {}
+
+    popup.search = CreateFrame("EditBox", nil, popup)
+    popup.search:SetHeight(24)
+    popup.search:SetAutoFocus(false)
+    popup.search:SetMaxLetters(80)
+    popup.search:SetFont(_FetchFont("Source Code Pro (Regular)"), 11, "")
+    popup.search:SetTextColor(unpack(_Theme().textMuted))
+    popup.search:SetTextInsets(7, 24, 0, 0)
+    QuestieConfigNextWidgets:ApplyBackdrop(popup.search, _Theme().insetBg, _Theme().borderSoft, 1)
+    popup.search.placeholder = QuestieConfigNextWidgets:CreateFont(popup.search, 10, _Theme().textSoft, "value")
+    popup.search.placeholder:SetPoint("LEFT", popup.search, "LEFT", 7, 0)
+    popup.search.placeholder:SetText("Search")
+    popup.search.clear = CreateFrame("Button", nil, popup.search)
+    popup.search.clear:SetSize(20, 20)
+    popup.search.clear:SetPoint("RIGHT", popup.search, "RIGHT", -2, 0)
+    popup.search.clear.label = QuestieConfigNextWidgets:CreateFont(popup.search.clear, 12, _Theme().textSoft, "title")
+    popup.search.clear.label:SetAllPoints()
+    popup.search.clear.label:SetJustifyH("CENTER")
+    popup.search.clear.label:SetText("x")
+    popup.search.clear:SetScript("OnClick", function()
+        popup.search:SetText("")
+        popup.search:SetFocus()
+    end)
+    popup.search:SetScript("OnEditFocusGained", function(self)
+        self.placeholder:Hide()
+        self:SetBackdropBorderColor(unpack(_Theme().accent))
+    end)
+    popup.search:SetScript("OnEditFocusLost", function(self)
+        QuestieConfigNextWidgets:SetShown(self.placeholder, self:GetText() == "")
+        self:SetBackdropBorderColor(unpack(_Theme().borderSoft))
+    end)
+    popup.search:SetScript("OnEscapePressed", function() popup:Hide() end)
+    popup.search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    popup.search:SetScript("OnTextChanged", function(self)
+        local hasText = self:GetText() ~= ""
+        QuestieConfigNextWidgets:SetShown(self.placeholder, not hasText and not self:HasFocus())
+        QuestieConfigNextWidgets:SetShown(self.clear, hasText)
+        popup.offset = 0
+        _RefreshSelectPopup()
+    end)
+
+    popup.track = CreateFrame("Frame", nil, popup)
+    popup.track:SetWidth(7)
+    QuestieConfigNextWidgets:ApplyBackdrop(popup.track, _Theme().insetBg, _Theme().borderSoft, 1)
+    popup.thumb = CreateFrame("Button", nil, popup.track)
+    popup.thumb:SetWidth(5)
+    QuestieConfigNextWidgets:ApplyBackdrop(popup.thumb, _Theme().accentSoft, _Theme().accent, 1)
+    popup.thumb:RegisterForDrag("LeftButton")
+    popup.thumb:SetScript("OnDragStart", function(self)
+        if (popup.maximumOffset or 0) <= 0 then
+            return
+        end
+        local _, cursorY = GetCursorPosition()
+        local uiScale = UIParent:GetEffectiveScale()
+        self.qcStartCursorY = cursorY / (uiScale > 0 and uiScale or 1)
+        self.qcStartOffset = popup.offset or 0
+        self:SetScript("OnUpdate", function(button)
+            local _, currentY = GetCursorPosition()
+            currentY = currentY / (uiScale > 0 and uiScale or 1)
+            local travel = max(1, popup.track:GetHeight() - 2 - button:GetHeight())
+            local rowDelta = ((button.qcStartCursorY - currentY) / travel) * popup.maximumOffset
+            popup.offset = _Clamp(floor(button.qcStartOffset + rowDelta + 0.5), 0, popup.maximumOffset)
+            _RefreshSelectPopup()
+        end)
+    end)
+    local function _StopSelectThumb(self)
+        self:SetScript("OnUpdate", nil)
+    end
+    popup.thumb:SetScript("OnDragStop", _StopSelectThumb)
+    popup.thumb:SetScript("OnHide", _StopSelectThumb)
+
+    for index = 1, SELECT_VISIBLE_ROWS do
+        local row = CreateFrame("Button", nil, popup)
+        row:SetHeight(SELECT_ROW_HEIGHT)
+        row:RegisterForClicks("LeftButtonUp")
+        row:EnableMouseWheel(true)
+        QuestieConfigNextWidgets:ApplyBackdrop(row, _Theme().insetBg, {0, 0, 0, 0}, 1)
+        row.label = QuestieConfigNextWidgets:CreateFont(row, 11, _Theme().textMuted)
+        row.label:SetPoint("LEFT", row, "LEFT", 7, 0)
+        row.label:SetPoint("RIGHT", row, "RIGHT", -5, 0)
+        row:SetScript("OnEnter", function(self)
+            if self.qcOption and self.qcOption.value ~= popup.owner.qcValue then
+                self:SetBackdropColor(unpack(_Theme().navHoverBg))
+            end
+        end)
+        row:SetScript("OnLeave", _RefreshSelectPopup)
+        row:SetScript("OnMouseWheel", function(_, delta) _ScrollSelectPopup(-delta) end)
+        row:SetScript("OnClick", function(self)
+            local owner = popup.owner
+            if not (owner and self.qcOption) then
+                return
+            end
+            if owner.qcSpec.set then
+                owner.qcSpec.set(self.qcOption.value)
+            end
+            if owner.qcSpec.onChanged then
+                owner.qcSpec.onChanged()
+            end
+            owner:Refresh()
+            popup:Hide()
+        end)
+        popup.rows[index] = row
+    end
+
+    popup.noResults = QuestieConfigNextWidgets:CreateFont(popup, 11, _Theme().textSoft)
+    popup.noResults:SetText("No matching choices")
+    popup.noResults:SetJustifyH("CENTER")
+    popup.noResults:Hide()
+    popup:SetScript("OnMouseWheel", function(_, delta) _ScrollSelectPopup(-delta) end)
+    popup:SetScript("OnHide", function(self)
+        self.search:ClearFocus()
+        self.owner = nil
+    end)
+
+    local registered
+    for _, name in ipairs(UISpecialFrames) do
+        if name == "QuestieConfigNextSelectPopup" then
+            registered = true
+            break
+        end
+    end
+    if not registered then
+        table.insert(UISpecialFrames, "QuestieConfigNextSelectPopup")
+    end
+
+    selectPopup = popup
+    popup:Hide()
+    return popup
+end
+
+local function _OpenSelectPopup(owner)
+    local popup = _EnsureSelectPopup()
+    if popup:IsShown() and popup.owner == owner then
+        popup:Hide()
+        return
+    end
+
+    popup:Hide()
+    popup.owner = owner
+    popup.searchable = owner.qcSpec.searchable and true or false
+    popup.visibleRows = min(SELECT_VISIBLE_ROWS, max(1, #owner.qcOptions))
+    popup.offset = 0
+    popup:SetWidth(min(UIParent:GetWidth() - 24, max(owner.qcPopupWidth, owner.select:GetWidth())))
+    popup:SetHeight(8 + (popup.visibleRows * SELECT_ROW_HEIGHT) + (popup.searchable and 29 or 0))
+    QuestieConfigNextWidgets:ApplyBackdrop(popup, _Theme().windowBg, _Theme().borderSoft, 1)
+    QuestieConfigNextWidgets:ApplyBackdrop(popup.search, _Theme().insetBg, _Theme().borderSoft, 1)
+    popup.search:SetTextColor(unpack(_Theme().textMuted))
+    popup.search.placeholder:SetTextColor(unpack(_Theme().textSoft))
+    QuestieConfigNextWidgets:ApplyBackdrop(popup.track, _Theme().insetBg, _Theme().borderSoft, 1)
+    QuestieConfigNextWidgets:ApplyBackdrop(popup.thumb, _Theme().accentSoft, _Theme().accent, 1)
+
+    popup.search:ClearAllPoints()
+    popup.search:SetPoint("TOPLEFT", popup, "TOPLEFT", 5, -5)
+    popup.search:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -15, -5)
+    QuestieConfigNextWidgets:SetShown(popup.search, popup.searchable)
+    popup.search:SetText("")
+    popup.search.clear:Hide()
+
+    local rowTop = popup.searchable and -34 or -4
+    for index, row in ipairs(popup.rows) do
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", popup, "TOPLEFT", 4, rowTop - ((index - 1) * SELECT_ROW_HEIGHT))
+        row:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -14, rowTop - ((index - 1) * SELECT_ROW_HEIGHT))
+    end
+    popup.track:ClearAllPoints()
+    popup.track:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -3, rowTop)
+    popup.track:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -3, 4)
+    popup.noResults:ClearAllPoints()
+    popup.noResults:SetPoint("TOPLEFT", popup, "TOPLEFT", 8, rowTop - 5)
+    popup.noResults:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -15, rowTop - 5)
+
+    popup:ClearAllPoints()
+    local roomBelow = owner.select:GetBottom() or 0
+    if roomBelow >= popup:GetHeight() + 8 then
+        popup:SetPoint("TOPLEFT", owner.select, "BOTTOMLEFT", 0, -4)
+    else
+        popup:SetPoint("BOTTOMLEFT", owner.select, "TOPLEFT", 0, 4)
+    end
+    _RefreshSelectPopup()
+    popup:Show()
+end
+
+function QuestieConfigNextWidgets:CreateSelect(parent, spec)
+    local widget = CreateFrame("Frame", nil, parent)
+    widget:SetHeight(32)
+    widget.qcLayoutHeight = 32
+    widget.qcFullWidth = spec.fullWidth ~= false
+    widget.qcMinimumWidth = spec.minWidth or 280
+    widget.qcSpec = spec
+    widget.qcOptions = _NormalizeSelectOptions(spec)
+
+    local optionSearchText = ""
+    local maxOptionWidth = 0
+    local cachedMetadata = spec.cacheKey and selectMetadataCache[spec.cacheKey]
+    if cachedMetadata then
+        maxOptionWidth = cachedMetadata.width
+        optionSearchText = cachedMetadata.searchText
+    else
+        local optionNames = {}
+        for _, option in ipairs(widget.qcOptions) do
+            optionNames[#optionNames + 1] = option.label
+            local fontPath = spec.fontPreview and spec.fontPath and spec.fontPath(option.value) or nil
+            maxOptionWidth = max(maxOptionWidth, _MeasureSelectOption(option.label, fontPath))
+        end
+        optionSearchText = table.concat(optionNames, " ")
+        if spec.cacheKey then
+            selectMetadataCache[spec.cacheKey] = {width = maxOptionWidth, searchText = optionSearchText}
+        end
+    end
+    widget.qcSearchText = string.lower((spec.name or "") .. " " .. (spec.description or "") .. " " .. optionSearchText)
+    widget.qcPopupWidth = max(220, maxOptionWidth + 34)
+
+    widget.label = QuestieConfigNextWidgets:CreateFont(widget, 11, _Theme().textMuted)
+    widget.label:SetText(spec.name or "Choice")
+    widget.qcLabelWidth = widget.label:GetStringWidth() or 0
+
+    widget.select = CreateFrame("Button", nil, widget)
+    widget.select:SetHeight(26)
+    widget.select:RegisterForClicks("LeftButtonUp")
+    QuestieConfigNextWidgets:ApplyBackdrop(widget.select, _Theme().insetBg, _Theme().borderSoft, 1)
+    widget.selected = QuestieConfigNextWidgets:CreateFont(widget.select, 11, _Theme().textMuted)
+    widget.selected:SetPoint("LEFT", widget.select, "LEFT", 7, 0)
+    widget.selected:SetPoint("RIGHT", widget.select, "RIGHT", -22, 0)
+    widget.arrow = QuestieConfigNextWidgets:CreateFont(widget.select, 11, _Theme().textSoft, "value")
+    widget.arrow:SetPoint("RIGHT", widget.select, "RIGHT", -7, 0)
+    widget.arrow:SetText("v")
+
+    function widget:Layout(width)
+        self:SetWidth(width)
+        self.label:ClearAllPoints()
+        self.select:ClearAllPoints()
+        local selectWidth = min(310, max(230, floor(width * 0.52)))
+        local stacked = self.qcLabelWidth + selectWidth + 14 > width
+        self.qcLayoutHeight = stacked and 55 or 32
+        self:SetHeight(self.qcLayoutHeight)
+        if stacked then
+            self.label:SetPoint("TOPLEFT", self, "TOPLEFT", 3, -2)
+            self.label:SetPoint("TOPRIGHT", self, "TOPRIGHT", -3, -2)
+            self.select:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", 3, 2)
+            self.select:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3, 2)
+        else
+            self.label:SetPoint("LEFT", self, "LEFT", 3, 0)
+            self.label:SetPoint("RIGHT", self, "RIGHT", -(selectWidth + 10), 0)
+            self.select:SetPoint("RIGHT", self, "RIGHT", -3, 0)
+            self.select:SetWidth(selectWidth)
+        end
+    end
+
+    function widget:Refresh()
+        local disabled = _GetDisabled(spec)
+        local value = spec.get and spec.get()
+        local selectedLabel = tostring(value or "")
+        self.qcDisabled = disabled
+        self.qcValue = value
+        for _, option in ipairs(self.qcOptions) do
+            if option.value == value then
+                selectedLabel = option.label
+                break
+            end
+        end
+        self.selected:SetText(selectedLabel)
+        if spec.fontPreview and spec.fontPath then
+            self.selected:SetFont(spec.fontPath(value), 11, "")
+        else
+            self.selected:SetFont(_FetchFont("Expressway"), 11, "")
+        end
+        self.label:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textMuted))
+        self.selected:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textMuted))
+        self.arrow:SetTextColor(unpack(disabled and _Theme().textSoft or _Theme().textSoft))
+        self.select:SetBackdropColor(unpack(_Theme().insetBg))
+        self.select:SetBackdropBorderColor(unpack(_Theme().borderSoft))
+    end
+
+    widget.select:SetScript("OnEnter", function(self)
+        if not widget.qcDisabled then
+            self:SetBackdropColor(unpack(_Theme().navHoverBg))
+        end
+        _ShowTooltip(widget, spec.name, spec.description)
+    end)
+    widget.select:SetScript("OnLeave", function()
+        widget:Refresh()
+        _HideTooltip()
+    end)
+    widget.select:SetScript("OnClick", function()
+        if not widget.qcDisabled then
+            _OpenSelectPopup(widget)
+        end
+    end)
+
+    widget:Layout(560)
+    widget:Refresh()
+    return widget
+end
+
+function QuestieConfigNextWidgets:ClosePopups()
+    if selectPopup then
+        selectPopup:Hide()
+    end
 end
 
 function QuestieConfigNextWidgets:CreateScrollArea(parent)
