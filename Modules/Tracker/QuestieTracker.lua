@@ -726,13 +726,17 @@ local function _IsPlayerOnAutoQuest(questId)
         return false
     end
 
+    if QuestiePlayer.currentQuestlog and QuestiePlayer.currentQuestlog[questId] then
+        return true
+    end
+
     local questLogIndex = GetQuestLogIndexByID and GetQuestLogIndexByID(questId)
     if questLogIndex and questLogIndex > 0 then
         return true
     end
 
-    if C_QuestLog and type(C_QuestLog.IsOnQuest) == "function" then
-        local ok, isOnQuest = pcall(C_QuestLog.IsOnQuest, questId)
+    if NativeC_QuestLog and type(NativeC_QuestLog.IsOnQuest) == "function" then
+        local ok, isOnQuest = pcall(NativeC_QuestLog.IsOnQuest, questId)
         if ok and isOnQuest then
             return true
         end
@@ -740,18 +744,31 @@ local function _IsPlayerOnAutoQuest(questId)
     return false
 end
 
+local function _GetReadyAutoQuestOffer()
+    local firstQuestId
+    local firstOffer
+    local readyCount = 0
+
+    for _, questId in ipairs(autoQuestOfferOrder) do
+        local offer = autoQuestOffers[questId]
+        if offer and offer.title and not _IsPlayerOnAutoQuest(questId) then
+            readyCount = readyCount + 1
+            if not firstQuestId then
+                firstQuestId = questId
+                firstOffer = offer
+            end
+        end
+    end
+
+    return firstQuestId, firstOffer, readyCount
+end
+
 local function _HasReadyAutoQuestOffers()
     if not Questie.db or not Questie.db.profile or not Questie.db.profile.trackerAutoQuestNotices then
         return false
     end
 
-    for _, questId in ipairs(autoQuestOfferOrder) do
-        local offer = autoQuestOffers[questId]
-        if offer and offer.title then
-            return true
-        end
-    end
-    return false
+    return _GetReadyAutoQuestOffer() ~= nil
 end
 
 local function _HasPendingAutoQuestOffers()
@@ -761,7 +778,7 @@ local function _HasPendingAutoQuestOffers()
     end
 
     for _, questId in ipairs(autoQuestOfferOrder) do
-        if autoQuestOffers[questId] then
+        if autoQuestOffers[questId] and not _IsPlayerOnAutoQuest(questId) then
             return true
         end
     end
@@ -1847,8 +1864,10 @@ local function _EnsureAutoQuestNoticeWidgets(line)
         left = _CreateNoticeEdge(panel),
         right = _CreateNoticeEdge(panel),
     }
-    panel.edges.top:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
-    panel.edges.top:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+    -- Keep the warning edge below the tracker header accent instead of letting
+    -- both one-pixel lines fight for the same screen pixels.
+    panel.edges.top:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -2)
+    panel.edges.top:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, -2)
     panel.edges.top:SetHeight(1)
     panel.edges.bottom:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 0, 0)
     panel.edges.bottom:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", 0, 0)
@@ -3251,78 +3270,81 @@ function QuestieTracker:Update(forceUpdate)
             return
         end
 
-        for _, questId in ipairs(autoQuestOfferOrder) do
-            local offer = autoQuestOffers[questId]
-            if offer and offer.title then
-                line = TrackerLinePool.GetNextLine()
-                if not line then
-                    return
-                end
-
-                _EnsureAutoQuestNoticeWidgets(line)
-                line:SetMode("autoQuest")
-                line:SetOnClick("none")
-                line:SetScript("OnClick", function(self, button)
-                    if button == "LeftButton" then
-                        QuestieTracker:OpenAutoQuestOffer(self.autoQuestId)
-                    end
-                end)
-                line.expandZone:Hide()
-                line.expandQuest:Hide()
-                line.criteriaMark:Hide()
-                line.playButton:Hide()
-                line.separator:Hide()
-                line.label:SetFont(TrackerFonts:GetQuestFont(), trackerFontSizeQuest, Questie.db.profile.trackerFontOutline)
-                line.label:SetText("AUTO-PROVIDED QUEST  VIEW  ACCEPT")
-                line.label:SetHeight(1)
-                line.label:Hide()
-                line.prefixLabel:Hide()
-                line.Quest = nil
-                line.Objective = nil
-                line.isAutoQuestNotice = true
-                line.autoQuestId = questId
-                line.autoQuestTitle = offer.title
-                line.autoQuestPanel.action.questId = questId
-                line.autoQuestPanel.action.label:SetText("VIEW")
-                if autoQuestOpeningQuestId then
-                    line.autoQuestPanel.action:Disable()
-                    line.autoQuestPanel.action:SetAlpha(0.62)
-                else
-                    line.autoQuestPanel.action:Enable()
-                    line.autoQuestPanel.action:SetAlpha(1)
-                end
-                line.autoQuestPanel.action.pulseEnabled = false
-                line.autoQuestPanel.action.pulseTime = 0
-                line.autoQuestPanel.accept.questId = questId
-                if offer.acceptPending then
-                    line.autoQuestPanel.accept.label:SetText("ACCEPTING...")
-                    line.autoQuestPanel.accept:Disable()
-                    line.autoQuestPanel.accept:SetAlpha(0.62)
-                elseif autoQuestOpeningQuestId then
-                    line.autoQuestPanel.accept.label:SetText("WAIT...")
-                    line.autoQuestPanel.accept:Disable()
-                    line.autoQuestPanel.accept:SetAlpha(0.62)
-                else
-                    line.autoQuestPanel.accept.label:SetText("ACCEPT")
-                    line.autoQuestPanel.accept:Enable()
-                    line.autoQuestPanel.accept:SetAlpha(1)
-                end
-                line.autoQuestPanel.accept.pulseEnabled = not offer.acceptPending and not autoQuestOpeningQuestId
-                    and Questie.db.profile.trackerAutoQuestNoticeAnimation ~= false
-                line.autoQuestPanel.accept.pulseTime = 0
-                line.autoQuestPanel:SetScript("OnUpdate", nil)
-                line.autoQuestPanel:SetAlpha(1)
-                line.autoQuestPanel:Show()
-                _ApplyAutoQuestNoticeColors(line)
-                line:UpdateAutoQuestNoticeLayout()
-                line.autoQuestNeedsIntro = offer.shouldAnimate
-                    and Questie.db.profile.trackerAutoQuestNoticeAnimation ~= false
-                offer.shouldAnimate = nil
-                line:Show()
-                autoQuestRenderedLines[#autoQuestRenderedLines + 1] = line
-                trackerLineWidth = math.max(trackerLineWidth, trackerMinLineWidth)
-            end
+        local questId, offer, readyCount = _GetReadyAutoQuestOffer()
+        if not questId or not offer then
+            return
         end
+
+        line = TrackerLinePool.GetNextLine()
+        if not line then
+            return
+        end
+
+        _EnsureAutoQuestNoticeWidgets(line)
+        line:SetMode("autoQuest")
+        line:SetOnClick("none")
+        line:SetScript("OnClick", function(self, button)
+            if button == "LeftButton" then
+                QuestieTracker:OpenAutoQuestOffer(self.autoQuestId)
+            end
+        end)
+        line.expandZone:Hide()
+        line.expandQuest:Hide()
+        line.criteriaMark:Hide()
+        line.playButton:Hide()
+        line.separator:Hide()
+        line.label:SetFont(TrackerFonts:GetQuestFont(), trackerFontSizeQuest, Questie.db.profile.trackerFontOutline)
+        line.label:SetText("AUTO-PROVIDED QUEST  VIEW  ACCEPT")
+        line.label:SetHeight(1)
+        line.label:Hide()
+        line.prefixLabel:Hide()
+        line.Quest = nil
+        line.Objective = nil
+        line.isAutoQuestNotice = true
+        line.autoQuestId = questId
+        line.autoQuestTitle = offer.title
+        line.autoQuestPanel.kicker:SetText(readyCount > 1
+            and string.format("AUTO-PROVIDED QUEST  1/%d", readyCount)
+            or "AUTO-PROVIDED QUEST")
+        line.autoQuestPanel.action.questId = questId
+        line.autoQuestPanel.action.label:SetText("VIEW")
+        if autoQuestOpeningQuestId then
+            line.autoQuestPanel.action:Disable()
+            line.autoQuestPanel.action:SetAlpha(0.62)
+        else
+            line.autoQuestPanel.action:Enable()
+            line.autoQuestPanel.action:SetAlpha(1)
+        end
+        line.autoQuestPanel.action.pulseEnabled = false
+        line.autoQuestPanel.action.pulseTime = 0
+        line.autoQuestPanel.accept.questId = questId
+        if offer.acceptPending then
+            line.autoQuestPanel.accept.label:SetText("ACCEPTING...")
+            line.autoQuestPanel.accept:Disable()
+            line.autoQuestPanel.accept:SetAlpha(0.62)
+        elseif autoQuestOpeningQuestId then
+            line.autoQuestPanel.accept.label:SetText("WAIT...")
+            line.autoQuestPanel.accept:Disable()
+            line.autoQuestPanel.accept:SetAlpha(0.62)
+        else
+            line.autoQuestPanel.accept.label:SetText("ACCEPT")
+            line.autoQuestPanel.accept:Enable()
+            line.autoQuestPanel.accept:SetAlpha(1)
+        end
+        line.autoQuestPanel.accept.pulseEnabled = not offer.acceptPending and not autoQuestOpeningQuestId
+            and Questie.db.profile.trackerAutoQuestNoticeAnimation ~= false
+        line.autoQuestPanel.accept.pulseTime = 0
+        line.autoQuestPanel:SetScript("OnUpdate", nil)
+        line.autoQuestPanel:SetAlpha(1)
+        line.autoQuestPanel:Show()
+        _ApplyAutoQuestNoticeColors(line)
+        line:UpdateAutoQuestNoticeLayout()
+        line.autoQuestNeedsIntro = offer.shouldAnimate
+            and Questie.db.profile.trackerAutoQuestNoticeAnimation ~= false
+        offer.shouldAnimate = nil
+        line:Show()
+        autoQuestRenderedLines[#autoQuestRenderedLines + 1] = line
+        trackerLineWidth = math.max(trackerLineWidth, trackerMinLineWidth)
     end
 
     local function _UpdateLFGObjectives()
