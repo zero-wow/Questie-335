@@ -1094,23 +1094,43 @@ local function _GetAutoQuestFramePopupType(frame)
     end
 
     local _, watchPopupType, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(frame)
-    local layout = string.upper(tostring(frame.layout or ""))
-    if layout == "ACCEPTED" or layout == "COMPLETE" then
-        return layout, watchPopupIndex
-    elseif layout == "OFFER" then
-        return "OFFER", watchPopupIndex
+    if watchPopupIndex then
+        if watchPopupType ~= nil and tostring(watchPopupType) ~= "" then
+            return string.upper(tostring(watchPopupType)), watchPopupIndex
+        end
+        return nil, watchPopupIndex
     end
 
-    if watchPopupType ~= nil then
-        return string.upper(tostring(watchPopupType)), watchPopupIndex
+    local dialogueMethod = frame.method
+    local isDialogueAutoQuestPopup = type(frame.SetQuestOffer) == "function"
+        and type(frame.SetAcceptedQuest) == "function"
+        and type(frame.Close) == "function"
+        and (dialogueMethod == "SetQuestOffer" or dialogueMethod == "SetAcceptedQuest")
+    local isMarkedAutoQuestPopup = frame.isAutoQuestPopup == true or frame.isAutoQuest == true
+    -- Normal quest UI also uses generic fields such as layout and type.
+    if not isDialogueAutoQuestPopup and not isMarkedAutoQuestPopup then
+        return nil
+    end
+
+    if dialogueMethod == "SetQuestOffer" then
+        return "OFFER"
+    elseif dialogueMethod == "SetAcceptedQuest" then
+        return "ACCEPTED"
+    end
+
+    local layout = string.upper(tostring(frame.layout or ""))
+    if layout == "ACCEPTED" or layout == "COMPLETE" then
+        return layout
+    elseif layout == "OFFER" then
+        return "OFFER"
     end
 
     for _, value in ipairs({frame.popupType, frame.questPopupType, frame.type}) do
         if type(value) == "string" and value ~= "" then
-            return string.upper(value), watchPopupIndex
+            return string.upper(value)
         end
     end
-    return nil, watchPopupIndex
+    return nil
 end
 
 local function _GetFrameQuestId(frame)
