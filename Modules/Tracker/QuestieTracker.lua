@@ -132,6 +132,7 @@ local _SuppressNativeAutoQuestDefaults
 local _ScheduleNextAutoQuestAutoAccept
 local _HandlePresentedAutoQuestDetail
 local _HandleAcceptedAutoQuest
+local _ClearAutoQuestOpeningState
 
 local function _TrimLFGMirrorText(value)
     value = tostring(value or "")
@@ -1649,7 +1650,10 @@ local function _SweepAcceptedAutoQuestOffers()
     for index = #autoQuestOfferOrder, 1, -1 do
         local questId = autoQuestOfferOrder[index]
         if _IsPlayerOnAutoQuest(questId) then
-            changed = _RemoveAutoQuestOffer(questId) or changed
+            changed = true
+            _DismissPendingAutoQuestPopup(questId)
+            _RemoveAutoQuestOffer(questId)
+            _ClearAutoQuestOpeningState(questId)
         end
     end
 
@@ -2095,7 +2099,7 @@ local function _GetDisplayedAutoQuestId()
     end
 end
 
-local function _ClearAutoQuestOpeningState(questId)
+_ClearAutoQuestOpeningState = function(questId)
     if not questId or autoQuestOpeningQuestId == questId then
         autoQuestOpeningQuestId = nil
         autoQuestOpeningOffer = nil
@@ -2282,17 +2286,27 @@ _HandlePresentedAutoQuestDetail = function()
     return true
 end
 
-_HandleAcceptedAutoQuest = function(questLogIndex)
+_HandleAcceptedAutoQuest = function(questLogIndex, eventQuestId)
+    local acceptedQuestId = tonumber(eventQuestId)
+    if not acceptedQuestId and tonumber(questLogIndex)
+        and type(QuestieCompat.GetQuestIDFromLogIndex) == "function"
+    then
+        local ok, value = pcall(QuestieCompat.GetQuestIDFromLogIndex, tonumber(questLogIndex))
+        acceptedQuestId = ok and tonumber(value) or nil
+    end
+
+    -- Inventory and other external accept paths do not set Questie's opening
+    -- state, but Ascension still reports the accepted quest-log index.
+    if acceptedQuestId and autoQuestOffers[acceptedQuestId] then
+        _CompleteAutoQuestAcceptance(acceptedQuestId)
+        return true
+    end
+
     local questId = autoQuestOpeningQuestId
     if not questId or not autoQuestOpeningShouldAccept then
         return false
     end
 
-    local acceptedQuestId
-    if tonumber(questLogIndex) and type(QuestieCompat.GetQuestIDFromLogIndex) == "function" then
-        local ok, value = pcall(QuestieCompat.GetQuestIDFromLogIndex, tonumber(questLogIndex))
-        acceptedQuestId = ok and tonumber(value) or nil
-    end
     if acceptedQuestId and acceptedQuestId > 0 and acceptedQuestId ~= questId then
         return false
     end
@@ -2343,8 +2357,7 @@ function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
         return false
     end
     if _IsPlayerOnAutoQuest(questId) then
-        _RemoveAutoQuestOffer(questId)
-        _RequestAutoQuestNoticeRefresh()
+        _CompleteAutoQuestAcceptance(questId)
         return true
     end
     if isAutomatic and not _ShouldAutoAcceptAutoQuest(questId, offer) then
