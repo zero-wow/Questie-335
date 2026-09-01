@@ -103,6 +103,7 @@ local autoQuestTitleTooltip
 local autoQuestOffers = {}
 local autoQuestOfferOrder = {}
 local autoQuestIgnoredQuestIds = {}
+local autoQuestResolvedQuestIds = {}
 local autoQuestRenderedLines = {}
 local autoQuestRefreshScheduled = false
 local autoQuestSuppressionScanNeeded = false
@@ -648,7 +649,19 @@ end
 
 local function _ShouldIgnoreAutoQuestOffer(questId, title)
     questId = tonumber(questId)
-    return (questId and autoQuestIgnoredQuestIds[questId] == true) or _ShouldIgnoreAutoQuestNotice(title)
+    return (questId and (autoQuestIgnoredQuestIds[questId] == true or autoQuestResolvedQuestIds[questId] ~= nil))
+        or _ShouldIgnoreAutoQuestNotice(title)
+end
+
+local function _MarkAutoQuestResolved(questId, state)
+    questId = tonumber(questId)
+    if not questId or questId <= 0 then
+        return
+    end
+
+    if autoQuestResolvedQuestIds[questId] ~= "completed" then
+        autoQuestResolvedQuestIds[questId] = state or "accepted"
+    end
 end
 
 local function _CallQuestTitleProvider(provider, methodName, questId)
@@ -754,6 +767,36 @@ local function _ResolveAutoQuestTitle(questId, titleHint)
     end
 end
 
+local function _IsAutoQuestCompleted(questId)
+    local questIdText = tostring(questId)
+    local completedQuests = Questie.db and Questie.db.char and Questie.db.char.complete
+    if completedQuests and (completedQuests[questId] or completedQuests[questIdText]) then
+        return true
+    end
+
+    -- Ascension can expose both a compatibility C_QuestLog method and the
+    -- authoritative legacy global. A false result from one must not mask another.
+    local checkedProviders = {}
+    local function ProviderReportsComplete(isCompleted)
+        if type(isCompleted) == "function" and not checkedProviders[isCompleted] then
+            checkedProviders[isCompleted] = true
+            local ok, completed = pcall(isCompleted, questId)
+            if ok and completed then
+                return true
+            end
+        end
+        return false
+    end
+    if ProviderReportsComplete(NativeC_QuestLog and NativeC_QuestLog.IsQuestFlaggedCompleted)
+        or ProviderReportsComplete(C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted)
+        or ProviderReportsComplete(_G.IsQuestFlaggedCompleted)
+        or ProviderReportsComplete(QuestieCompat.IsQuestFlaggedCompleted)
+    then
+        return true
+    end
+    return false
+end
+
 local function _IsPlayerOnAutoQuest(questId, questTitle)
     if not questId then
         return false
@@ -761,18 +804,8 @@ local function _IsPlayerOnAutoQuest(questId, questTitle)
 
     local questIdText = tostring(questId)
     local normalizedTitle = _NormalizeAutoQuestTitle(questTitle)
-    local completedQuests = Questie.db and Questie.db.char and Questie.db.char.complete
-    if completedQuests and (completedQuests[questId] or completedQuests[questIdText]) then
+    if _IsAutoQuestCompleted(questId) then
         return true
-    end
-
-    local isCompleted = (NativeC_QuestLog and NativeC_QuestLog.IsQuestFlaggedCompleted)
-        or _G.IsQuestFlaggedCompleted
-    if type(isCompleted) == "function" then
-        local ok, completed = pcall(isCompleted, questId)
-        if ok and completed then
-            return true
-        end
     end
 
     for activeQuestId, activeQuest in pairs(QuestiePlayer.currentQuestlog or {}) do
@@ -1003,7 +1036,7 @@ local function _CaptureAutoQuestOffer(questId, popupType, titleHint, nativeFrame
     if autoQuestOpeningQuestId == questId then
         return false
     end
-    if autoQuestIgnoredQuestIds[questId] then
+    if autoQuestIgnoredQuestIds[questId] or autoQuestResolvedQuestIds[questId] then
         C_Timer.After(0, function()
             _DismissPendingAutoQuestPopup(questId)
         end)
@@ -1942,7 +1975,10 @@ local function _InitializeAutoQuestNoticeHooks()
         autoQuestEventFrame = CreateFrame("Frame")
         autoQuestEventFrame:RegisterEvent("QUEST_DETAIL")
         autoQuestEventFrame:RegisterEvent("QUEST_ACCEPTED")
+        autoQuestEventFrame:RegisterEvent("QUEST_TURNED_IN")
+        autoQuestEventFrame:RegisterEvent("QUEST_REMOVED")
         autoQuestEventFrame:RegisterEvent("QUEST_LOG_UPDATE")
+        autoQuestEventFrame:RegisterEvent("QUEST_QUERY_COMPLETE")
         autoQuestEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
         autoQuestEventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
         autoQuestEventFrame:SetScript("OnEvent", function(_, event, ...)
@@ -1955,7 +1991,23 @@ local function _InitializeAutoQuestNoticeHooks()
                     _HandleAcceptedAutoQuest(...)
                 end
                 C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
-            elseif event == "QUEST_LOG_UPDATE" then
+            elseif event == "QUEST_TURNED_IN" then
+                local questId = tonumber((...))
+                if questId and questId > 0 then
+                    _MarkAutoQuestResolved(questId, "completed")
+                    _DismissPendingAutoQuestPopup(questId)
+                    _RemoveAutoQuestOffer(questId)
+                    _ClearAutoQuestOpeningState(questId)
+                    _RequestAutoQuestNoticeRefresh()
+                end
+            elseif event == "QUEST_REMOVED" then
+                local questId = tonumber((...))
+                if questId and autoQuestResolvedQuestIds[questId] == "accepted" then
+                    -- An accepted quest which is removed without being turned in
+                    -- was abandoned and may legitimately be offered again.
+                    autoQuestResolvedQuestIds[questId] = nil
+                end
+            elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_QUERY_COMPLETE" then
                 C_Timer.After(0, _SweepAcceptedAutoQuestOffers)
             elseif event == "PLAYER_ENTERING_WORLD" then
                 _ScheduleAutoQuestOfferDiscovery()
@@ -2349,6 +2401,7 @@ _ClearAutoQuestOpeningState = function(questId)
 end
 
 local function _CompleteAutoQuestAcceptance(questId)
+    _MarkAutoQuestResolved(questId, "accepted")
     _DismissPendingAutoQuestPopup(questId)
     _RemoveAutoQuestOffer(questId)
     _ClearAutoQuestOpeningState(questId)
@@ -2529,12 +2582,27 @@ _HandlePresentedAutoQuestDetail = function()
 end
 
 _HandleAcceptedAutoQuest = function(questLogIndex, eventQuestId)
+    local firstArg = tonumber(questLogIndex)
     local acceptedQuestId = tonumber(eventQuestId)
-    if not acceptedQuestId and tonumber(questLogIndex)
+    if acceptedQuestId and acceptedQuestId <= 0 then
+        acceptedQuestId = nil
+    end
+    if not acceptedQuestId and firstArg
         and type(QuestieCompat.GetQuestIDFromLogIndex) == "function"
     then
-        local ok, value = pcall(QuestieCompat.GetQuestIDFromLogIndex, tonumber(questLogIndex))
+        local ok, value = pcall(QuestieCompat.GetQuestIDFromLogIndex, firstArg)
         acceptedQuestId = ok and tonumber(value) or nil
+    end
+    if (not acceptedQuestId or acceptedQuestId <= 0) and firstArg and firstArg > 0 then
+        -- Ascension builds can send questID as the first argument instead of a
+        -- quest-log index. Validate that shape against the offer or active log.
+        local activeIndex = GetQuestLogIndexByID and GetQuestLogIndexByID(firstArg)
+        if autoQuestOffers[firstArg] or (activeIndex and activeIndex > 0) then
+            acceptedQuestId = firstArg
+        end
+    end
+    if acceptedQuestId and acceptedQuestId > 0 then
+        _MarkAutoQuestResolved(acceptedQuestId, "accepted")
     end
 
     -- Inventory and other external accept paths do not set Questie's opening
