@@ -743,6 +743,20 @@ local function _IsPlayerOnAutoQuest(questId, questTitle)
 
     local questIdText = tostring(questId)
     local normalizedTitle = _NormalizeAutoQuestTitle(questTitle)
+    local completedQuests = Questie.db and Questie.db.char and Questie.db.char.complete
+    if completedQuests and (completedQuests[questId] or completedQuests[questIdText]) then
+        return true
+    end
+
+    local isCompleted = (NativeC_QuestLog and NativeC_QuestLog.IsQuestFlaggedCompleted)
+        or _G.IsQuestFlaggedCompleted
+    if type(isCompleted) == "function" then
+        local ok, completed = pcall(isCompleted, questId)
+        if ok and completed then
+            return true
+        end
+    end
+
     for activeQuestId, activeQuest in pairs(QuestiePlayer.currentQuestlog or {}) do
         if tostring(activeQuestId) == questIdText then
             return true
@@ -1048,6 +1062,31 @@ local function _GetWatchFrameAutoQuestPopupData(frame)
     return nil, nil, popupIndex
 end
 
+local function _GetAutoQuestFramePopupType(frame)
+    if not frame then
+        return nil
+    end
+
+    local _, watchPopupType, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(frame)
+    local layout = string.upper(tostring(frame.layout or ""))
+    if layout == "ACCEPTED" or layout == "COMPLETE" then
+        return layout, watchPopupIndex
+    elseif layout == "OFFER" then
+        return "OFFER", watchPopupIndex
+    end
+
+    if watchPopupType ~= nil then
+        return string.upper(tostring(watchPopupType)), watchPopupIndex
+    end
+
+    for _, value in ipairs({frame.popupType, frame.questPopupType, frame.type}) do
+        if type(value) == "string" and value ~= "" then
+            return string.upper(value), watchPopupIndex
+        end
+    end
+    return nil, watchPopupIndex
+end
+
 local function _GetFrameQuestId(frame)
     if not frame then
         return nil
@@ -1206,14 +1245,14 @@ local function _IsExplicitAutoQuestOfferFrame(frame)
         return false
     end
 
-    local layout = string.lower(tostring(frame.layout or ""))
-    local popupType = string.upper(tostring(frame.popupType or frame.questPopupType or frame.type or ""))
-    local _, watchPopupType, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(frame)
-    return layout == "offer"
-        or popupType == "OFFER"
+    local popupType, watchPopupIndex = _GetAutoQuestFramePopupType(frame)
+    if popupType then
+        return popupType == "OFFER"
+    end
+
+    return watchPopupIndex ~= nil
         or frame.isAutoQuestPopup == true
         or frame.isAutoQuest == true
-        or (watchPopupIndex and (watchPopupType == nil or string.upper(tostring(watchPopupType)) == "OFFER"))
 end
 
 local function _EnumerateFrames(callback)
@@ -1261,16 +1300,30 @@ local function _ScanVisibleAutoQuestOffers(scanPendingQueue)
     end
 
     _EnumerateFrames(function(frame)
-        local _, _, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(frame)
+        local popupType, watchPopupIndex = _GetAutoQuestFramePopupType(frame)
         local isShown = not frame.IsShown or frame:IsShown()
         local isActive = frame.isActive == true
-        if _IsExplicitAutoQuestOfferFrame(frame) and (isShown or isActive or watchPopupIndex) then
+        local isOfferFrame = popupType == "OFFER"
+            or (popupType == nil and (watchPopupIndex ~= nil
+                or frame.isAutoQuestPopup == true or frame.isAutoQuest == true))
+        if popupType and popupType ~= "OFFER" and (isShown or isActive or watchPopupIndex) then
+            local questId = _GetFrameQuestId(frame)
+            if questId and _RemoveAutoQuestOffer(questId) then
+                autoQuestSuppressionScanNeeded = true
+                _RequestAutoQuestNoticeRefresh()
+            end
+        elseif isOfferFrame and (isShown or isActive or watchPopupIndex) then
             local questId = _GetFrameQuestId(frame)
             if questId then
                 if _EnsureAutoQuestNativeHook then
                     _EnsureAutoQuestNativeHook(frame)
                 end
-                _CaptureAutoQuestOffer(questId, "OFFER", _GetAutoQuestFrameTitle(frame), frame)
+                _CaptureAutoQuestOffer(
+                    questId,
+                    popupType or "OFFER",
+                    _GetAutoQuestFrameTitle(frame),
+                    frame
+                )
             end
         end
     end)
@@ -1452,6 +1505,22 @@ local function _RestoreAutoQuestFrame(state)
     return complete
 end
 
+local function _ReleaseSuppressedAutoQuestFrame(frame)
+    local state = frame and autoQuestSuppressedFrameSet[frame]
+    if not state or not _RestoreAutoQuestFrame(state) then
+        return false
+    end
+
+    autoQuestSuppressedFrameSet[frame] = nil
+    for index = #autoQuestSuppressedFrames, 1, -1 do
+        if autoQuestSuppressedFrames[index] == state then
+            table.remove(autoQuestSuppressedFrames, index)
+            break
+        end
+    end
+    return true
+end
+
 local function _GetNativeWatchFrame()
     return _G.WatchFrame or _G.QuestWatchFrame
 end
@@ -1579,13 +1648,21 @@ _EnsureAutoQuestNativeHook = function(frame)
     end
 
     frame.__Questie335AutoQuestHooked = true
-    local isOfferFrame = _IsExplicitAutoQuestOfferFrame(frame)
     local function RefreshAfterNativeChange(self)
+        local isOfferFrame = _IsExplicitAutoQuestOfferFrame(self)
+        local questId = _GetFrameQuestId(self)
         if isOfferFrame then
-            local questId = _GetFrameQuestId(self)
             if questId then
-                _CaptureAutoQuestOffer(questId, "OFFER", _GetAutoQuestFrameTitle(self), self)
+                _CaptureAutoQuestOffer(
+                    questId,
+                    _GetAutoQuestFramePopupType(self) or "OFFER",
+                    _GetAutoQuestFrameTitle(self),
+                    self
+                )
             end
+        elseif questId and _RemoveAutoQuestOffer(questId) then
+            autoQuestSuppressionScanNeeded = true
+            _RequestAutoQuestNoticeRefresh()
         end
         if isOfferFrame
             and not autoQuestNativeSuppressionSuspended
@@ -1596,6 +1673,8 @@ _EnsureAutoQuestNativeHook = function(frame)
         then
             local _, _, watchPopupIndex = _GetWatchFrameAutoQuestPopupData(self)
             _SuppressAutoQuestFrame(self, watchPopupIndex ~= nil)
+        elseif not isOfferFrame and autoQuestSuppressedFrameSet[self] then
+            _ReleaseSuppressedAutoQuestFrame(self)
         end
         if _HasReadyAutoQuestOffers() then
             autoQuestSuppressionScanNeeded = true
@@ -1604,19 +1683,21 @@ _EnsureAutoQuestNativeHook = function(frame)
     end
     pcall(frame.HookScript, frame, "OnShow", RefreshAfterNativeChange)
     pcall(frame.HookScript, frame, "OnEvent", RefreshAfterNativeChange)
-    if isOfferFrame then
-        pcall(frame.HookScript, frame, "OnUpdate", function(self)
-            if autoQuestSuppressedFrameSet[self] and self.SetAlpha then
+    pcall(frame.HookScript, frame, "OnUpdate", function(self)
+        if autoQuestSuppressedFrameSet[self] and self.SetAlpha then
+            if _IsExplicitAutoQuestOfferFrame(self) then
                 self:SetAlpha(0)
+            else
+                _ReleaseSuppressedAutoQuestFrame(self)
             end
-        end)
-        pcall(frame.HookScript, frame, "OnHide", function(self)
-            local questId = self.isActive == false and _GetFrameQuestId(self)
-            if questId and _RemoveAutoQuestOffer(questId) then
-                _RequestAutoQuestNoticeRefresh()
-            end
-        end)
-    end
+        end
+    end)
+    pcall(frame.HookScript, frame, "OnHide", function(self)
+        local questId = self.isActive == false and _GetFrameQuestId(self)
+        if questId and _RemoveAutoQuestOffer(questId) then
+            _RequestAutoQuestNoticeRefresh()
+        end
+    end)
 end
 
 _SuppressNativeAutoQuestDefaults = function()
@@ -1679,9 +1760,6 @@ local function _InstallDialogueUIAutoQuestHook()
     end
 
     local ok = pcall(hooksecurefunc, manager, "AddAutoQuestPopUp", function()
-        local questId = type(GetQuestID) == "function" and GetQuestID()
-        local title = type(GetTitleText) == "function" and GetTitleText()
-        _CaptureAutoQuestOffer(questId, "OFFER", title)
         _ScanVisibleAutoQuestOffers()
     end)
     autoQuestDialogueHookInstalled = ok == true

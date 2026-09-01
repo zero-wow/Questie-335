@@ -1,12 +1,12 @@
 ## Interface: 30300
-## Title: QuestieCustom|cFF00FF00 v9.5.2-asc21|r|cFF33FFCC [Ascension Zero]|r
+## Title: QuestieCustom|cFF00FF00 v9.5.2-asc22|r|cFF33FFCC [Ascension Zero]|r
 ## Author: Netrinil/Aero/Logon/Muehe/TheCrux(BreakBB)/Drejjmit/Dyaxler/Schaka/Zoey/Everyone else
 ## Notes: A standalone Classic QuestHelper
 ## Notes-esMX: Ayundante de misión
 ## Notes-esES: Ayundante de misión
 ## Notes-ptBR: Ajudante de missão
 ## Notes-frFR: Assistant de quête
-## Version: 9.5.2-asc21
+## Version: 9.5.2-asc22
 ## RequiredDeps:
 ## OptionalDeps: Ace3, CallbackHandler-1.0, HereBeDragons, SharedMedia, LibDataBroker-1.1, LibDBIcon-1.0, LibSharedMedia-3.0, LibStub, LibUIDropDownMenu
 ## SavedVariables: QuestieConfig
