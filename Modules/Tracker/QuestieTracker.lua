@@ -102,6 +102,7 @@ local AUTO_QUEST_DISCOVERY_DELAYS = {0, 0.05, 0.15, 0.35, 0.75, 1.5, 3}
 local autoQuestTitleTooltip
 local autoQuestOffers = {}
 local autoQuestOfferOrder = {}
+local autoQuestIgnoredQuestIds = {}
 local autoQuestRenderedLines = {}
 local autoQuestRefreshScheduled = false
 local autoQuestSuppressionScanNeeded = false
@@ -645,6 +646,11 @@ local function _ShouldIgnoreAutoQuestNotice(value)
     return string.sub(title, 1, #AUTO_QUEST_IGNORED_TITLE_PREFIX) == AUTO_QUEST_IGNORED_TITLE_PREFIX
 end
 
+local function _ShouldIgnoreAutoQuestOffer(questId, title)
+    questId = tonumber(questId)
+    return (questId and autoQuestIgnoredQuestIds[questId] == true) or _ShouldIgnoreAutoQuestNotice(title)
+end
+
 local function _CallQuestTitleProvider(provider, methodName, questId)
     local method = type(provider) == "table" and provider[methodName]
     if type(method) ~= "function" then
@@ -815,7 +821,7 @@ local function _GetReadyAutoQuestOffer()
 
     for _, questId in ipairs(autoQuestOfferOrder) do
         local offer = autoQuestOffers[questId]
-        if offer and offer.title and not _ShouldIgnoreAutoQuestNotice(offer.title)
+        if offer and offer.title and not _ShouldIgnoreAutoQuestOffer(questId, offer.title)
             and not _IsPlayerOnAutoQuest(questId, offer.title)
         then
             readyCount = readyCount + 1
@@ -846,7 +852,7 @@ local function _HasPendingAutoQuestOffers()
     for _, questId in ipairs(autoQuestOfferOrder) do
         local offer = autoQuestOffers[questId]
         local title = offer and (offer.title or offer.titleHint)
-        if offer and not _ShouldIgnoreAutoQuestNotice(title)
+        if offer and not _ShouldIgnoreAutoQuestOffer(questId, title)
             and not _IsPlayerOnAutoQuest(questId, title)
         then
             return true
@@ -910,7 +916,7 @@ local function _ShouldAutoAcceptAutoQuest(questId, offer)
     if offer and offer.autoAcceptSuppressed then
         return false
     end
-    if offer and _ShouldIgnoreAutoQuestNotice(offer.title or offer.titleHint) then
+    if offer and _ShouldIgnoreAutoQuestOffer(questId, offer.title or offer.titleHint) then
         return false
     end
     if _QuestieAuto.disallowedQuests and _QuestieAuto.disallowedQuests[questId] then
@@ -963,7 +969,7 @@ local function _ScheduleAutoQuestTitleRetry(offer)
         end
 
         local resolvedTitle = _ResolveAutoQuestTitle(questId, offer.titleHint)
-        if resolvedTitle and _ShouldIgnoreAutoQuestNotice(resolvedTitle) then
+        if resolvedTitle and _ShouldIgnoreAutoQuestOffer(questId, resolvedTitle) then
             _DismissPendingAutoQuestPopup(questId)
             _RemoveAutoQuestOffer(questId)
             _RequestAutoQuestNoticeRefresh()
@@ -997,13 +1003,19 @@ local function _CaptureAutoQuestOffer(questId, popupType, titleHint, nativeFrame
     if autoQuestOpeningQuestId == questId then
         return false
     end
+    if autoQuestIgnoredQuestIds[questId] then
+        C_Timer.After(0, function()
+            _DismissPendingAutoQuestPopup(questId)
+        end)
+        return false
+    end
 
     popupType = string.upper(tostring(popupType or "OFFER"))
     local resolvedHint = _TrimAutoQuestText(titleHint) or _ResolveAutoQuestTitle(questId)
     if popupType ~= "OFFER" then
         return false
     end
-    if _ShouldIgnoreAutoQuestNotice(resolvedHint) or _IsPlayerOnAutoQuest(questId, resolvedHint) then
+    if _ShouldIgnoreAutoQuestOffer(questId, resolvedHint) or _IsPlayerOnAutoQuest(questId, resolvedHint) then
         local removed = _RemoveAutoQuestOffer(questId)
         C_Timer.After(0, function()
             _DismissPendingAutoQuestPopup(questId)
@@ -1542,7 +1554,7 @@ local function _RestoreAutoQuestFrame(state)
         local questId = _GetFrameQuestId(frame)
         local offer = questId and autoQuestOffers[questId]
         local title = offer and (offer.title or offer.titleHint)
-        if offer and not _ShouldIgnoreAutoQuestNotice(title)
+        if offer and not _ShouldIgnoreAutoQuestOffer(questId, title)
             and not _IsPlayerOnAutoQuest(questId, title)
         then
             if not pcall(frame.Show, frame) then
@@ -1845,7 +1857,7 @@ local function _SweepAcceptedAutoQuestOffers()
         local questId = autoQuestOfferOrder[index]
         local offer = autoQuestOffers[questId]
         local title = offer and (offer.title or offer.titleHint)
-        if offer and (_ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title)) then
+        if offer and (_ShouldIgnoreAutoQuestOffer(questId, title) or _IsPlayerOnAutoQuest(questId, title)) then
             changed = true
             _DismissPendingAutoQuestPopup(questId)
             _RemoveAutoQuestOffer(questId)
@@ -2009,13 +2021,17 @@ local function _CreateAutoQuestNoticeAction(parent, name, label)
     action.label:SetPoint("CENTER", action, "CENTER", 0, 0)
     action.label:SetText(label)
     action:SetScript("OnUpdate", function(self, elapsed)
+        if self.hovered then
+            self.glow:SetAlpha(0.42)
+            return
+        end
         if not self.pulseEnabled then
             self.glow:SetAlpha(0)
             return
         end
         self.pulseTime = (self.pulseTime or 0) + elapsed
         local alpha = 0.10 + ((math.sin(self.pulseTime * 4.5) + 1) * 0.12)
-        self.glow:SetAlpha(self.hovered and 0.42 or alpha)
+        self.glow:SetAlpha(alpha)
     end)
     return action
 end
@@ -2087,6 +2103,23 @@ local function _EnsureAutoQuestNoticeWidgets(line)
         panel.title:SetNonSpaceWrap(false)
     end
 
+    local close = _CreateAutoQuestNoticeAction(panel, nil, "X")
+    close:SetScript("OnClick", function(self)
+        QuestieTracker:IgnoreAutoQuestOffer(self.questId)
+    end)
+    close:SetScript("OnEnter", function(self)
+        self.hovered = true
+        GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+        GameTooltip:AddLine("Ignore this notice", 1, 0.82, 0)
+        GameTooltip:AddLine("Hide this quest notice until the UI is reloaded.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    close:SetScript("OnLeave", function(self)
+        self.hovered = nil
+        GameTooltip:Hide()
+    end)
+    panel.close = close
+
     local action = _CreateAutoQuestNoticeAction(panel, nil, "VIEW")
     action:SetScript("OnClick", function(self)
         QuestieTracker:OpenAutoQuestOffer(self.questId)
@@ -2144,7 +2177,7 @@ local function _EnsureAutoQuestNoticeWidgets(line)
             panelLeftOffset = (baseLeft + panelInset) - lineLeft
         end
         local textLeft = 38
-        local textWidth = math.max(180, panelWidth - textLeft - 8)
+        local textWidth = math.max(180, panelWidth - textLeft - 32)
         local questFontSize = TrackerFonts:GetQuestFontSize()
         local kickerFontSize = math.max(9, questFontSize - 2)
 
@@ -2153,6 +2186,9 @@ local function _EnsureAutoQuestNoticeWidgets(line)
         noticePanel:SetWidth(panelWidth)
         noticePanel.badge:ClearAllPoints()
         noticePanel.badge:SetPoint("TOPLEFT", noticePanel, "TOPLEFT", 8, -9)
+        noticePanel.close:ClearAllPoints()
+        noticePanel.close:SetPoint("TOPRIGHT", noticePanel, "TOPRIGHT", -7, -7)
+        noticePanel.close:SetSize(18, 18)
         noticePanel.kicker:ClearAllPoints()
         noticePanel.kicker:SetPoint("TOPLEFT", noticePanel, "TOPLEFT", textLeft, -7)
         noticePanel.kicker:SetWidth(textWidth)
@@ -2201,6 +2237,12 @@ local function _ApplyAutoQuestNoticeColors(line)
     panel.badgeText:SetTextColor(tonumber(gold[1]) or 1, tonumber(gold[2]) or 0.82, tonumber(gold[3]) or 0)
     panel.kicker:SetTextColor(tonumber(accent[1]) or 0.16, tonumber(accent[2]) or 0.78, tonumber(accent[3]) or 0.72)
     panel.title:SetTextColor(1, 0.94, 0.70)
+    panel.close.background:SetVertexColor(0.075, 0.045, 0.025, 0.98)
+    _SetTextureColor(panel.close.glow, gold, {1, 0.82, 0, 1})
+    for _, edge in pairs(panel.close.edges) do
+        _SetTextureColor(edge, gold, {1, 0.82, 0, 1})
+    end
+    panel.close.label:SetTextColor(tonumber(gold[1]) or 1, tonumber(gold[2]) or 0.82, tonumber(gold[3]) or 0)
     panel.action.background:SetVertexColor(0.055, 0.065, 0.078, 0.98)
     _SetTextureColor(panel.action.glow, accent, {0.16, 0.78, 0.72, 0.9})
     for _, edge in pairs(panel.action.edges) do
@@ -2318,7 +2360,7 @@ end
 local function _FinishAutoQuestPresentationFailure(questId, offer, message)
     local isAutomatic = autoQuestOpeningAutomatic
     local title = offer and (offer.title or offer.titleHint)
-    if _ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title) then
+    if _ShouldIgnoreAutoQuestOffer(questId, title) or _IsPlayerOnAutoQuest(questId, title) then
         _CompleteAutoQuestAcceptance(questId)
         return
     elseif offer and autoQuestOffers[questId] == offer then
@@ -2342,7 +2384,7 @@ local function _TryAcceptPresentedAutoQuest(questId, offer, serial)
         return false
     end
     local title = offer.title or offer.titleHint
-    if _ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title) then
+    if _ShouldIgnoreAutoQuestOffer(questId, title) or _IsPlayerOnAutoQuest(questId, title) then
         _CompleteAutoQuestAcceptance(questId)
         return true
     end
@@ -2544,10 +2586,31 @@ end
 
 function QuestieTracker:OpenAutoQuestOffer(questId)
     questId = tonumber(questId)
-    if not questId or not autoQuestOffers[questId] or autoQuestOpeningQuestId then
+    local offer = questId and autoQuestOffers[questId]
+    if not offer or _ShouldIgnoreAutoQuestOffer(questId, offer.title or offer.titleHint) or autoQuestOpeningQuestId then
         return false
     end
     return _BeginAutoQuestPresentation(questId, false, false)
+end
+
+function QuestieTracker:IgnoreAutoQuestOffer(questId)
+    questId = tonumber(questId)
+    if not questId then
+        return false
+    end
+
+    autoQuestIgnoredQuestIds[questId] = true
+    if autoQuestOpeningQuestId == questId and _GetDisplayedAutoQuestId() == questId
+        and type(CloseQuest) == "function"
+    then
+        pcall(CloseQuest)
+    end
+    _DismissPendingAutoQuestPopup(questId)
+    _RemoveAutoQuestOffer(questId)
+    _ClearAutoQuestOpeningState(questId)
+    _RequestAutoQuestNoticeRefresh()
+    _ScheduleNextAutoQuestAutoAccept()
+    return true
 end
 
 function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
@@ -2557,7 +2620,7 @@ function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
         return false
     end
     local title = offer.title or offer.titleHint
-    if _ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title) then
+    if _ShouldIgnoreAutoQuestOffer(questId, title) or _IsPlayerOnAutoQuest(questId, title) then
         _CompleteAutoQuestAcceptance(questId)
         return true
     end
@@ -3488,6 +3551,7 @@ function QuestieTracker:Update(forceUpdate)
         line.autoQuestPanel.kicker:SetText(readyCount > 1
             and string.format("AUTO-PROVIDED QUEST  1/%d", readyCount)
             or "AUTO-PROVIDED QUEST")
+        line.autoQuestPanel.close.questId = questId
         line.autoQuestPanel.action.questId = questId
         line.autoQuestPanel.action.label:SetText("VIEW")
         if autoQuestOpeningQuestId then
