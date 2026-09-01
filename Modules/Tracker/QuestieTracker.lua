@@ -133,6 +133,7 @@ local _ScheduleNextAutoQuestAutoAccept
 local _HandlePresentedAutoQuestDetail
 local _HandleAcceptedAutoQuest
 local _ClearAutoQuestOpeningState
+local _DismissPendingAutoQuestPopup
 
 local function _TrimLFGMirrorText(value)
     value = tostring(value or "")
@@ -618,6 +619,20 @@ local function _TrimAutoQuestText(value)
     return value
 end
 
+local function _NormalizeAutoQuestTitle(value)
+    value = _TrimAutoQuestText(value)
+    if not value then
+        return nil
+    end
+
+    value = string.gsub(value, "|T.-|t", "")
+    value = string.gsub(value, "|c%x%x%x%x%x%x%x%x", "")
+    value = string.gsub(value, "|r", "")
+    value = string.gsub(value, "%s+", " ")
+    value = _TrimAutoQuestText(value)
+    return value and string.lower(value) or nil
+end
+
 local function _CallQuestTitleProvider(provider, methodName, questId)
     local method = type(provider) == "table" and provider[methodName]
     if type(method) ~= "function" then
@@ -721,18 +736,41 @@ local function _ResolveAutoQuestTitle(questId, titleHint)
     end
 end
 
-local function _IsPlayerOnAutoQuest(questId)
+local function _IsPlayerOnAutoQuest(questId, questTitle)
     if not questId then
         return false
     end
 
-    if QuestiePlayer.currentQuestlog and QuestiePlayer.currentQuestlog[questId] then
-        return true
+    local questIdText = tostring(questId)
+    local normalizedTitle = _NormalizeAutoQuestTitle(questTitle)
+    for activeQuestId, activeQuest in pairs(QuestiePlayer.currentQuestlog or {}) do
+        if tostring(activeQuestId) == questIdText then
+            return true
+        end
+        if normalizedTitle and type(activeQuest) == "table" then
+            local activeTitle = activeQuest.name or activeQuest.Name or activeQuest.LocalizedName
+            if _NormalizeAutoQuestTitle(activeTitle) == normalizedTitle then
+                return true
+            end
+        end
     end
 
     local questLogIndex = GetQuestLogIndexByID and GetQuestLogIndexByID(questId)
     if questLogIndex and questLogIndex > 0 then
         return true
+    end
+
+    local numEntries = GetNumQuestLogEntries and tonumber(select(1, GetNumQuestLogEntries())) or 0
+    for index = 1, numEntries do
+        local activeTitle, _, _, isHeader, _, _, _, activeQuestId = GetQuestLogTitle(index)
+        if not isHeader then
+            if activeQuestId ~= nil and tostring(activeQuestId) == questIdText then
+                return true
+            end
+            if normalizedTitle and _NormalizeAutoQuestTitle(activeTitle) == normalizedTitle then
+                return true
+            end
+        end
     end
 
     if NativeC_QuestLog and type(NativeC_QuestLog.IsOnQuest) == "function" then
@@ -751,7 +789,7 @@ local function _GetReadyAutoQuestOffer()
 
     for _, questId in ipairs(autoQuestOfferOrder) do
         local offer = autoQuestOffers[questId]
-        if offer and offer.title and not _IsPlayerOnAutoQuest(questId) then
+        if offer and offer.title and not _IsPlayerOnAutoQuest(questId, offer.title) then
             readyCount = readyCount + 1
             if not firstQuestId then
                 firstQuestId = questId
@@ -778,7 +816,8 @@ local function _HasPendingAutoQuestOffers()
     end
 
     for _, questId in ipairs(autoQuestOfferOrder) do
-        if autoQuestOffers[questId] and not _IsPlayerOnAutoQuest(questId) then
+        local offer = autoQuestOffers[questId]
+        if offer and not _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
             return true
         end
     end
@@ -920,7 +959,18 @@ local function _CaptureAutoQuestOffer(questId, popupType, titleHint, nativeFrame
     end
 
     popupType = string.upper(tostring(popupType or "OFFER"))
-    if popupType ~= "OFFER" or _IsPlayerOnAutoQuest(questId) then
+    local resolvedHint = _TrimAutoQuestText(titleHint) or _ResolveAutoQuestTitle(questId)
+    if popupType ~= "OFFER" then
+        return false
+    end
+    if _IsPlayerOnAutoQuest(questId, resolvedHint) then
+        local removed = _RemoveAutoQuestOffer(questId)
+        C_Timer.After(0, function()
+            _DismissPendingAutoQuestPopup(questId)
+        end)
+        if removed then
+            _RequestAutoQuestNoticeRefresh()
+        end
         return false
     end
 
@@ -940,7 +990,6 @@ local function _CaptureAutoQuestOffer(questId, popupType, titleHint, nativeFrame
         offer.nativeFrame = nativeFrame
     end
 
-    local resolvedHint = _TrimAutoQuestText(titleHint)
     if resolvedHint then
         offer.titleHint = resolvedHint
         offer.title = resolvedHint
@@ -1309,7 +1358,7 @@ local function _CloseDialogueAutoQuestOffer(questId)
     return closed
 end
 
-local function _DismissPendingAutoQuestPopup(questId)
+_DismissPendingAutoQuestPopup = function(questId)
     if _CloseDialogueAutoQuestOffer(questId) then
         return
     end
@@ -1392,7 +1441,8 @@ local function _RestoreAutoQuestFrame(state)
     end
     if state.hiddenByQuestie and state.wasShown and frame.Show then
         local questId = _GetFrameQuestId(frame)
-        if questId and autoQuestOffers[questId] and not _IsPlayerOnAutoQuest(questId) then
+        local offer = questId and autoQuestOffers[questId]
+        if offer and not _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
             if not pcall(frame.Show, frame) then
                 complete = false
             end
@@ -1666,7 +1716,8 @@ local function _SweepAcceptedAutoQuestOffers()
     local changed = false
     for index = #autoQuestOfferOrder, 1, -1 do
         local questId = autoQuestOfferOrder[index]
-        if _IsPlayerOnAutoQuest(questId) then
+        local offer = autoQuestOffers[questId]
+        if offer and _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
             changed = true
             _DismissPendingAutoQuestPopup(questId)
             _RemoveAutoQuestOffer(questId)
@@ -2138,7 +2189,7 @@ end
 
 local function _FinishAutoQuestPresentationFailure(questId, offer, message)
     local isAutomatic = autoQuestOpeningAutomatic
-    if _IsPlayerOnAutoQuest(questId) then
+    if _IsPlayerOnAutoQuest(questId, offer and (offer.title or offer.titleHint)) then
         _CompleteAutoQuestAcceptance(questId)
         return
     elseif offer and autoQuestOffers[questId] == offer then
@@ -2161,7 +2212,7 @@ local function _TryAcceptPresentedAutoQuest(questId, offer, serial)
     then
         return false
     end
-    if _IsPlayerOnAutoQuest(questId) then
+    if _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
         _CompleteAutoQuestAcceptance(questId)
         return true
     end
@@ -2203,7 +2254,7 @@ local function _TryAcceptPresentedAutoQuest(questId, offer, serial)
 
     C_Timer.After(0.20, function()
         if autoQuestOpeningQuestId == questId and offer.presentationSerial == serial
-            and _IsPlayerOnAutoQuest(questId)
+            and _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint)
         then
             _CompleteAutoQuestAcceptance(questId)
         end
@@ -2375,7 +2426,7 @@ function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
     if not offer or offer.acceptPending or autoQuestOpeningQuestId then
         return false
     end
-    if _IsPlayerOnAutoQuest(questId) then
+    if _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
         _CompleteAutoQuestAcceptance(questId)
         return true
     end
