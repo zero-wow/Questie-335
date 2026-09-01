@@ -633,6 +633,18 @@ local function _NormalizeAutoQuestTitle(value)
     return value and string.lower(value) or nil
 end
 
+local AUTO_QUEST_IGNORED_TITLE_PREFIX = "path to ascension:"
+
+local function _ShouldIgnoreAutoQuestNotice(value)
+    local title = _NormalizeAutoQuestTitle(value)
+    if not title then
+        return false
+    end
+
+    -- Ascension can announce these milestones without presenting an acceptable quest offer.
+    return string.sub(title, 1, #AUTO_QUEST_IGNORED_TITLE_PREFIX) == AUTO_QUEST_IGNORED_TITLE_PREFIX
+end
+
 local function _CallQuestTitleProvider(provider, methodName, questId)
     local method = type(provider) == "table" and provider[methodName]
     if type(method) ~= "function" then
@@ -803,7 +815,9 @@ local function _GetReadyAutoQuestOffer()
 
     for _, questId in ipairs(autoQuestOfferOrder) do
         local offer = autoQuestOffers[questId]
-        if offer and offer.title and not _IsPlayerOnAutoQuest(questId, offer.title) then
+        if offer and offer.title and not _ShouldIgnoreAutoQuestNotice(offer.title)
+            and not _IsPlayerOnAutoQuest(questId, offer.title)
+        then
             readyCount = readyCount + 1
             if not firstQuestId then
                 firstQuestId = questId
@@ -831,7 +845,10 @@ local function _HasPendingAutoQuestOffers()
 
     for _, questId in ipairs(autoQuestOfferOrder) do
         local offer = autoQuestOffers[questId]
-        if offer and not _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
+        local title = offer and (offer.title or offer.titleHint)
+        if offer and not _ShouldIgnoreAutoQuestNotice(title)
+            and not _IsPlayerOnAutoQuest(questId, title)
+        then
             return true
         end
     end
@@ -893,6 +910,9 @@ local function _ShouldAutoAcceptAutoQuest(questId, offer)
     if offer and offer.autoAcceptSuppressed then
         return false
     end
+    if offer and _ShouldIgnoreAutoQuestNotice(offer.title or offer.titleHint) then
+        return false
+    end
     if _QuestieAuto.disallowedQuests and _QuestieAuto.disallowedQuests[questId] then
         return false
     end
@@ -943,6 +963,12 @@ local function _ScheduleAutoQuestTitleRetry(offer)
         end
 
         local resolvedTitle = _ResolveAutoQuestTitle(questId, offer.titleHint)
+        if resolvedTitle and _ShouldIgnoreAutoQuestNotice(resolvedTitle) then
+            _DismissPendingAutoQuestPopup(questId)
+            _RemoveAutoQuestOffer(questId)
+            _RequestAutoQuestNoticeRefresh()
+            return
+        end
         if resolvedTitle then
             offer.title = resolvedTitle
             offer.titleIsFallback = nil
@@ -977,7 +1003,7 @@ local function _CaptureAutoQuestOffer(questId, popupType, titleHint, nativeFrame
     if popupType ~= "OFFER" then
         return false
     end
-    if _IsPlayerOnAutoQuest(questId, resolvedHint) then
+    if _ShouldIgnoreAutoQuestNotice(resolvedHint) or _IsPlayerOnAutoQuest(questId, resolvedHint) then
         local removed = _RemoveAutoQuestOffer(questId)
         C_Timer.After(0, function()
             _DismissPendingAutoQuestPopup(questId)
@@ -1495,7 +1521,10 @@ local function _RestoreAutoQuestFrame(state)
     if state.hiddenByQuestie and state.wasShown and frame.Show then
         local questId = _GetFrameQuestId(frame)
         local offer = questId and autoQuestOffers[questId]
-        if offer and not _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
+        local title = offer and (offer.title or offer.titleHint)
+        if offer and not _ShouldIgnoreAutoQuestNotice(title)
+            and not _IsPlayerOnAutoQuest(questId, title)
+        then
             if not pcall(frame.Show, frame) then
                 complete = false
             end
@@ -1795,7 +1824,8 @@ local function _SweepAcceptedAutoQuestOffers()
     for index = #autoQuestOfferOrder, 1, -1 do
         local questId = autoQuestOfferOrder[index]
         local offer = autoQuestOffers[questId]
-        if offer and _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
+        local title = offer and (offer.title or offer.titleHint)
+        if offer and (_ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title)) then
             changed = true
             _DismissPendingAutoQuestPopup(questId)
             _RemoveAutoQuestOffer(questId)
@@ -2267,7 +2297,8 @@ end
 
 local function _FinishAutoQuestPresentationFailure(questId, offer, message)
     local isAutomatic = autoQuestOpeningAutomatic
-    if _IsPlayerOnAutoQuest(questId, offer and (offer.title or offer.titleHint)) then
+    local title = offer and (offer.title or offer.titleHint)
+    if _ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title) then
         _CompleteAutoQuestAcceptance(questId)
         return
     elseif offer and autoQuestOffers[questId] == offer then
@@ -2290,7 +2321,8 @@ local function _TryAcceptPresentedAutoQuest(questId, offer, serial)
     then
         return false
     end
-    if _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
+    local title = offer.title or offer.titleHint
+    if _ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title) then
         _CompleteAutoQuestAcceptance(questId)
         return true
     end
@@ -2504,7 +2536,8 @@ function QuestieTracker:AcceptAutoQuestOffer(questId, isAutomatic)
     if not offer or offer.acceptPending or autoQuestOpeningQuestId then
         return false
     end
-    if _IsPlayerOnAutoQuest(questId, offer.title or offer.titleHint) then
+    local title = offer.title or offer.titleHint
+    if _ShouldIgnoreAutoQuestNotice(title) or _IsPlayerOnAutoQuest(questId, title) then
         _CompleteAutoQuestAcceptance(questId)
         return true
     end
